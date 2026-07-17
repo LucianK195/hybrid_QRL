@@ -79,6 +79,7 @@ Run the CartPole experiment:
 ## Documentation
 
 - [Architecture and extension guide](docs/architecture.md)
+- [Source API reference](docs/api_reference.md)
 - [Manual neutral-atom backend integration](docs/manual_backend_integration.md)
 - [Experiment and reporting protocol](docs/research_protocol.md)
 - [Migration from the former template layout](docs/migration.md)
