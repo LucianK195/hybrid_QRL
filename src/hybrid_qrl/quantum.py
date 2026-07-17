@@ -1,4 +1,37 @@
-"""Quantum sampler adapters and small Rydberg emulator implementations."""
+"""Quantum candidate-sampler contracts and neutral-atom/Rydberg emulators.
+
+All samplers in this module implement the :class:`CandidateSampler` contract:
+they map a utility vector and a :class:`~hybrid_qrl.core.ConflictGraph` to raw
+binary candidates.  The idealized Rydberg Hamiltonian used by the built-in
+emulators is
+
+``H(t) = Omega(t)/2 sum_i X_i - Delta(t) sum_i u_i n_i``
+``       + U sum_(i,j in E) n_i n_j``,
+
+where ``u_i`` is a state-dependent utility and ``U`` penalizes simultaneous
+selection of conflict-edge endpoints.  The implementations differ in how they
+construct and evolve this Hamiltonian:
+
+* :class:`RydbergEmulatorSampler` builds dense pulse unitaries and executes a
+  Qiskit circuit;
+* :class:`DenseRydbergStatevectorSampler` applies the same pulse schedule
+  directly with SciPy matrix exponentials;
+* :class:`QuTiPRydbergSampler` integrates a continuous Hamiltonian with QuTiP;
+* :class:`ManualNeutralAtomBackendSampler` delegates evolution to the downloaded
+  multi-layer neutral-atom simulator.
+
+Conventions
+-----------
+Every returned tuple is in graph-node order, independent of a backend's native
+bitstring convention.  ``Action[i]`` therefore always refers to graph node
+``i``.  Backend measurements may violate intended constraints, so the
+downstream safety filter remains the authoritative validator.
+
+These classes are research simulators and integration adapters.  Dense
+simulation cost, cache behavior, and solver timing are not representative of
+neutral-atom hardware performance and do not establish quantum advantage.
+Optional Qiskit and QuTiP dependencies are imported lazily.
+"""
 
 from __future__ import annotations
 
@@ -37,7 +70,7 @@ from .core import Action, ConflictGraph
 
 
 def _load_qutip():
-    """Import QuTiP only when a QuTiP-backed sampler is constructed."""
+    """Return the lazily imported QuTiP module or raise an actionable error."""
     global qt, _QUTIP_IMPORT_ERROR
     if qt is not None:
         return qt
@@ -54,7 +87,7 @@ def _load_qutip():
 
 
 def _load_qiskit() -> None:
-    """Import Qiskit only when the Qiskit sampler is executed."""
+    """Populate lazily imported Qiskit symbols used by the dense circuit path."""
     global QuantumCircuit
     global transpile
     global UnitaryGate
@@ -95,7 +128,28 @@ def _load_qiskit() -> None:
 
 @dataclass(frozen=True)
 class PulseSchedule:
-    """Piecewise-constant pulse schedule shared by the idealized samplers."""
+    """Parameters for the shared adiabatic-inspired pulse schedule.
+
+    Parameters
+    ----------
+    duration:
+        Total evolution time in simulator units.  Must be positive.
+    steps:
+        Number of equal piecewise-constant intervals.  Must be positive.
+    omega_max:
+        Peak transverse Rabi amplitude.  The envelope follows
+        ``omega_max * sin(pi * progress)``.
+    delta_start, delta_end:
+        Initial and final global detuning values for a linear sweep.
+    blockade:
+        Interaction penalty ``U`` applied when both endpoints of a conflict
+        edge are excited.
+
+    Notes
+    -----
+    The QuTiP sampler evaluates a continuous version of the same envelope,
+    whereas the dense and Qiskit samplers evaluate interval midpoints.
+    """
 
     duration: float = 10.0
     steps: int = 40
@@ -111,6 +165,23 @@ class PulseSchedule:
             raise ValueError("steps must be positive")
 
     def at(self, step: int) -> tuple[float, float]:
+        """Evaluate Rabi amplitude and detuning at one interval midpoint.
+
+        Parameters
+        ----------
+        step:
+            Zero-based interval index in ``[0, steps)``.
+
+        Returns
+        -------
+        tuple of float
+            ``(omega, delta)`` for the selected interval.
+
+        Raises
+        ------
+        IndexError
+            If ``step`` lies outside the configured schedule.
+        """
         if not 0 <= step < self.steps:
             raise IndexError("pulse step is outside the schedule")
         progress = (step + 0.5) / self.steps
@@ -121,11 +192,14 @@ class PulseSchedule:
 
 @dataclass(frozen=True)
 class _QiskitProblem:
+    """Internal immutable input for Qiskit's Hamiltonian builder."""
+
     weights: tuple[float, ...]
     edges: tuple[tuple[int, int], ...]
 
     @property
     def nodes(self) -> int:
+        """Number of binary decisions/qubits represented by ``weights``."""
         return len(self.weights)
 
 
@@ -135,6 +209,7 @@ def _qiskit_hamiltonian(
     delta: float,
     blockade: float,
 ) -> np.ndarray:
+    """Construct one dense Qiskit Hamiltonian matrix for a pulse interval."""
     terms: list[tuple[str, list[int], complex]] = []
     identity_shift = 0.0
     for node, weight in enumerate(problem.weights):
@@ -161,6 +236,7 @@ def _qiskit_rydberg_samples(
     shots: int,
     seed: int,
 ) -> tuple[list[Action], float, str]:
+    """Compile, execute, and decode a piecewise-unitary Qiskit experiment."""
     _load_qiskit()
 
     circuit = QuantumCircuit(problem.nodes)
@@ -206,6 +282,10 @@ class QuantumSamplerTemplate(ABC):
     how that program is executed, and how raw measurements become bit actions.
     The inherited ``sample`` method makes the result compatible with the hybrid
     pipeline. Safety is deliberately enforced again outside this class.
+
+    Subclasses normally override ``name`` and implement the three abstract
+    translation hooks.  The base :meth:`sample` method derives a backend seed
+    from the caller-owned NumPy generator and requests one shot per candidate.
     """
 
     name = "custom_quantum_sampler"
@@ -214,14 +294,60 @@ class QuantumSamplerTemplate(ABC):
     def build_program(
         self, utilities: np.ndarray, graph: ConflictGraph
     ) -> Any:
+        """Translate utilities and constraints into a backend program.
+
+        Parameters
+        ----------
+        utilities:
+            One state-dependent utility per graph node.
+        graph:
+            Intended pairwise constraints and cardinality bounds.
+
+        Returns
+        -------
+        Any
+            Backend-specific circuit, pulse sequence, Hamiltonian, or job
+            description accepted by :meth:`execute`.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def execute(self, program: Any, shots: int, seed: int) -> Iterable[Any]:
+        """Execute ``program`` and yield raw backend measurements.
+
+        Parameters
+        ----------
+        program:
+            Object produced by :meth:`build_program`.
+        shots:
+            Requested measurement count; normally equal to candidate budget
+            ``K``.
+        seed:
+            Backend seed derived from the pipeline's NumPy generator.
+
+        Returns
+        -------
+        iterable
+            Raw measurement objects consumed one at a time by :meth:`decode`.
+        """
         raise NotImplementedError
 
     @abstractmethod
     def decode(self, measurement: Any, nodes: int) -> Action:
+        """Convert one native measurement to graph-node action order.
+
+        Parameters
+        ----------
+        measurement:
+            Backend-specific measurement record.
+        nodes:
+            Required number of action bits.
+
+        Returns
+        -------
+        Action
+            Binary tuple whose index order matches the conflict graph.
+        """
         raise NotImplementedError
 
     def sample(
@@ -231,6 +357,23 @@ class QuantumSamplerTemplate(ABC):
         candidates: int,
         rng: np.random.Generator,
     ) -> list[Action]:
+        """Build, execute, and decode one candidate batch.
+
+        Parameters
+        ----------
+        utilities, graph, candidates, rng:
+            See :meth:`hybrid_qrl.core.CandidateSampler.sample`.
+
+        Returns
+        -------
+        list of Action
+            Decoded measurements.  Feasibility is not guaranteed.
+
+        Raises
+        ------
+        ValueError
+            If ``candidates`` is not positive.
+        """
         if candidates <= 0:
             raise ValueError("candidates must be positive")
         seed = int(rng.integers(0, np.iinfo(np.int32).max))
@@ -240,7 +383,27 @@ class QuantumSamplerTemplate(ABC):
 
 
 class RydbergEmulatorSampler:
-    """Adapter around the repository's idealized dense Qiskit emulator."""
+    """Emulate a piecewise Rydberg pulse as a dense Qiskit circuit.
+
+    Parameters
+    ----------
+    schedule:
+        Pulse configuration.  ``None`` selects :class:`PulseSchedule` defaults.
+
+    Attributes
+    ----------
+    last_backend:
+        Name of the most recently used Qiskit simulator, or ``None`` before the
+        first call.
+    last_elapsed_seconds:
+        Most recent circuit construction, compilation, and execution time.
+
+    Notes
+    -----
+    Each pulse interval materializes a dense ``2**n`` square unitary.  This
+    implementation is limited to small graphs and its elapsed time is emulator
+    overhead, not a QPU latency estimate.
+    """
 
     name = "qiskit_rydberg_emulator"
 
@@ -256,6 +419,31 @@ class RydbergEmulatorSampler:
         candidates: int,
         rng: np.random.Generator,
     ) -> list[Action]:
+        """Sample raw candidates with the Qiskit emulator.
+
+        Parameters
+        ----------
+        utilities:
+            Floating-point vector with shape ``(graph.nodes,)``.
+        graph:
+            Graph whose edges define interaction penalties.
+        candidates:
+            Number of measurement shots/candidates.
+        rng:
+            Generator used to derive the Qiskit simulator seed.
+
+        Returns
+        -------
+        list of Action
+            Exactly ``candidates`` decoded Qiskit measurements.
+
+        Raises
+        ------
+        ImportError
+            If the optional Qiskit dependencies are unavailable.
+        ValueError
+            If the candidate budget or utility shape is invalid.
+        """
         if candidates <= 0:
             raise ValueError("candidates must be positive")
         if utilities.shape != (graph.nodes,):
@@ -278,6 +466,28 @@ class DenseRydbergStatevectorSampler:
     are rounded only for the cache key, making the approximation explicit. It
     remains a classical ideal-state emulator and is intended only for small
     integration tests such as the two-qubit CartPole action head.
+
+    Parameters
+    ----------
+    schedule:
+        Piecewise pulse and interaction parameters.
+    cache_decimals:
+        Decimal precision used both for cache keys and evolved utilities.
+        Lower values increase cache reuse but introduce a coarser approximation.
+    name:
+        Diagnostic sampler identifier stored in :class:`~hybrid_qrl.core.Decision`.
+
+    Attributes
+    ----------
+    cache_hits, cache_misses:
+        Counts of probability-distribution cache accesses since construction.
+
+    Notes
+    -----
+    For ``n`` nodes, this implementation constructs dense ``2**n`` by ``2**n``
+    Hamiltonians and exponentiates one per pulse step.  Memory and runtime grow
+    exponentially.  Cached arrays are returned by reference and should be
+    treated as read-only by callers.
     """
 
     schedule: PulseSchedule = PulseSchedule()
@@ -292,6 +502,7 @@ class DenseRydbergStatevectorSampler:
     def _cache_key(
         self, utilities: np.ndarray, graph: ConflictGraph
     ) -> tuple[object, ...]:
+        """Build an immutable key from graph, rounded utilities, and schedule."""
         return (
             graph.nodes,
             graph.edges,
@@ -302,6 +513,27 @@ class DenseRydbergStatevectorSampler:
     def probabilities(
         self, utilities: np.ndarray, graph: ConflictGraph
     ) -> np.ndarray:
+        """Evolve ``|00...0>`` and return final basis probabilities.
+
+        Parameters
+        ----------
+        utilities:
+            Per-node utilities with shape ``(graph.nodes,)``.  Values are rounded
+            to ``cache_decimals`` before Hamiltonian construction.
+        graph:
+            Conflict edges used as pair-interaction penalties.
+
+        Returns
+        -------
+        numpy.ndarray
+            Normalized vector of length ``2**graph.nodes``.  Basis index bit
+            ``i`` corresponds to graph node ``i``.
+
+        Raises
+        ------
+        ValueError
+            If the utility shape does not match the graph.
+        """
         if utilities.shape != (graph.nodes,):
             raise ValueError("utilities must contain one value per graph node")
         key = self._cache_key(utilities, graph)
@@ -344,6 +576,23 @@ class DenseRydbergStatevectorSampler:
         candidates: int,
         rng: np.random.Generator,
     ) -> list[Action]:
+        """Draw candidates from the cached or newly evolved distribution.
+
+        Parameters
+        ----------
+        utilities, graph, candidates, rng:
+            See :meth:`hybrid_qrl.core.CandidateSampler.sample`.
+
+        Returns
+        -------
+        list of Action
+            Exactly ``candidates`` actions in graph-node order.
+
+        Raises
+        ------
+        ValueError
+            If the candidate budget is not positive or utilities are malformed.
+        """
         if candidates <= 0:
             raise ValueError("candidates must be positive")
         probabilities = self.probabilities(utilities, graph)
@@ -367,6 +616,31 @@ class QuTiPRydbergSampler:
     QuTiP's ``QobjEvo`` and ``sesolve`` integrate the continuous pulse. Final
     state probabilities are sampled with the pipeline-provided NumPy RNG. The
     hard safety layer remains authoritative after measurement.
+
+    Parameters
+    ----------
+    schedule:
+        Continuous pulse-envelope and interaction parameters.
+    cache_decimals:
+        Utility precision used for both the cache key and Hamiltonian.  ``None``
+        disables rounding and distribution caching.
+    solver_options:
+        Options forwarded to :func:`qutip.sesolve`.  Defaults retain the final
+        state, suppress progress output, and normalize solver output.
+    name:
+        Diagnostic sampler identifier.
+
+    Attributes
+    ----------
+    cache_hits, cache_misses:
+        Probability-cache counters.
+    last_solver_stats:
+        QuTiP statistics from the most recent uncached evolution.
+
+    Notes
+    -----
+    QuTiP tensor order places graph node ``0`` at the most-significant basis
+    digit.  :meth:`sample` preserves graph-node tuple order when decoding.
     """
 
     schedule: PulseSchedule = PulseSchedule()
@@ -389,15 +663,18 @@ class QuTiPRydbergSampler:
 
     @property
     def qutip_version(self) -> str:
+        """Return the version string of the lazily imported QuTiP module."""
         return str(qt.__version__)
 
     @staticmethod
     def _embedded_operator(operator, node: int, nodes: int):
+        """Embed a one-qubit QuTiP operator at ``node`` in an ``nodes`` register."""
         factors = [qt.qeye(2) for _ in range(nodes)]
         factors[node] = operator
         return qt.tensor(factors)
 
     def _operators(self, graph: ConflictGraph):
+        """Build the transverse, number, and interaction operators."""
         identity = qt.qeye([2] * graph.nodes)
         number = (qt.qeye(2) - qt.sigmaz()) / 2.0
         x_sum = 0 * identity
@@ -411,6 +688,7 @@ class QuTiPRydbergSampler:
         return x_sum, numbers, interactions
 
     def _rounded_utilities(self, utilities: np.ndarray) -> np.ndarray:
+        """Convert utilities to float and apply configured rounding."""
         if self.cache_decimals is None:
             return np.asarray(utilities, dtype=float)
         return np.round(np.asarray(utilities, dtype=float), self.cache_decimals)
@@ -418,6 +696,7 @@ class QuTiPRydbergSampler:
     def _cache_key(
         self, utilities: np.ndarray, graph: ConflictGraph
     ) -> tuple[object, ...] | None:
+        """Return an evolution cache key, or ``None`` when caching is disabled."""
         if self.cache_decimals is None:
             return None
         return (
@@ -430,6 +709,31 @@ class QuTiPRydbergSampler:
     def probabilities(
         self, utilities: np.ndarray, graph: ConflictGraph
     ) -> np.ndarray:
+        """Integrate the continuous Hamiltonian and return final probabilities.
+
+        Parameters
+        ----------
+        utilities:
+            Per-node detuning weights with shape ``(graph.nodes,)``.
+        graph:
+            Conflict graph whose edges receive blockade interactions.
+
+        Returns
+        -------
+        numpy.ndarray
+            Normalized computational-basis distribution of length
+            ``2**graph.nodes`` in QuTiP tensor order.
+
+        Raises
+        ------
+        ValueError
+            If the utility vector has the wrong shape.
+
+        Notes
+        -----
+        A cache hit returns the stored NumPy array without invoking the solver or
+        changing ``last_solver_stats``.  Treat returned arrays as read-only.
+        """
         utilities = np.asarray(utilities, dtype=float)
         if utilities.shape != (graph.nodes,):
             raise ValueError("utilities must contain one value per graph node")
@@ -491,6 +795,23 @@ class QuTiPRydbergSampler:
         candidates: int,
         rng: np.random.Generator,
     ) -> list[Action]:
+        """Draw raw action candidates from the QuTiP final state.
+
+        Parameters
+        ----------
+        utilities, graph, candidates, rng:
+            See :meth:`hybrid_qrl.core.CandidateSampler.sample`.
+
+        Returns
+        -------
+        list of Action
+            Exactly ``candidates`` tuples in graph-node order.
+
+        Raises
+        ------
+        ValueError
+            If the candidate budget or utility shape is invalid.
+        """
         if candidates <= 0:
             raise ValueError("candidates must be positive")
         probabilities = self.probabilities(utilities, graph)
@@ -516,6 +837,48 @@ class ManualNeutralAtomBackendSampler:
     Important: the external backend derives interactions from atom positions,
     not directly from ``graph.edges``. The project safety filter therefore
     remains the final authority on feasibility.
+
+    Parameters
+    ----------
+    positions:
+        Optional atom coordinates with shape ``(n_qubits, 2)``.  If omitted, a
+        unit-spaced line is generated for the current graph.
+    C6:
+        Van der Waals interaction coefficient passed to the simulator factory.
+    protocol:
+        Backend-native adiabatic protocol.  ``None`` creates a documented
+        default :class:`neutral_atom.simulator.AdiabaticProtocol`.
+    backend_source:
+        Root of a local ``QML-Platform-for-Neutral-Atom`` checkout.  When
+        omitted, parent directories and then the working directory are searched.
+    cache_decimals:
+        Decimal precision for utility and position cache keys.  ``None``
+        disables distribution caching without rounding physical inputs.
+    utility_scale:
+        Multiplicative conversion from learned utilities to local detuning
+        weights.
+    backend_name:
+        Name supplied to ``create_simulator``; defaults to ``"qutip"``.
+    simulator_kwargs:
+        Additional keyword arguments forwarded to the simulator factory, for
+        example a noise configuration.
+    name:
+        Diagnostic sampler identifier.
+
+    Attributes
+    ----------
+    cache_hits, cache_misses:
+        Probability-cache counters.
+    last_evolution_result:
+        Backend result from the most recent uncached adiabatic evolution.
+    last_backend_object:
+        Simulator instance used by the most recent uncached evolution.
+
+    Notes
+    -----
+    This adapter mutates ``sys.path`` only when it discovers an uninstalled
+    local backend package.  For deployed environments, installing the backend
+    normally or passing ``backend_source`` explicitly is preferable.
     """
 
     positions: np.ndarray | None = None
@@ -574,12 +937,26 @@ class ManualNeutralAtomBackendSampler:
 
     @staticmethod
     def linear_positions(nodes: int, spacing: float = 1.0) -> np.ndarray:
-        """Return a simple line geometry when no hardware layout is supplied."""
+        """Construct a simple two-dimensional line geometry.
+
+        Parameters
+        ----------
+        nodes:
+            Number of atom coordinates to generate.
+        spacing:
+            Distance between consecutive atoms along the x-axis.
+
+        Returns
+        -------
+        numpy.ndarray
+            Array with shape ``(nodes, 2)`` and zero y-coordinates.
+        """
         return np.column_stack(
             (np.arange(nodes, dtype=float) * spacing, np.zeros(nodes, dtype=float))
         )
 
     def _positions_for(self, graph: ConflictGraph) -> np.ndarray:
+        """Resolve and validate atom coordinates for ``graph``."""
         if self.positions is None:
             return self.linear_positions(graph.nodes)
         if self.positions.shape != (graph.nodes, 2):
@@ -590,13 +967,34 @@ class ManualNeutralAtomBackendSampler:
         return self.positions
 
     def _weighted_utilities(self, utilities: np.ndarray) -> np.ndarray:
+        """Scale utilities for detuning and reject non-finite values."""
         values = np.asarray(utilities, dtype=float) * self.utility_scale
         if not np.all(np.isfinite(values)):
             raise ValueError("utilities must be finite")
         return values
 
     def geometry_report(self, graph: ConflictGraph) -> dict[str, object]:
-        """Summarize how well positions separate edges from non-edges."""
+        """Measure how strongly the geometry separates edges from non-edges.
+
+        Parameters
+        ----------
+        graph:
+            Abstract constraint graph to compare against physical interactions.
+
+        Returns
+        -------
+        dict
+            JSON-serializable report containing coordinates, the weakest edge
+            interaction, strongest non-edge interaction, their ratio, and a
+            warning describing the approximate embedding.
+
+        Notes
+        -----
+        Interactions are computed as ``C6 / max(distance, 0.1)**6`` to match the
+        finite-distance guard used by this diagnostic.  A larger separation
+        ratio is preferable, but no ratio turns the physical geometry into an
+        exact arbitrary conflict mask.
+        """
         positions = self._positions_for(graph)
         edge_set = set(graph.edges)
         edge_interactions = []
@@ -635,6 +1033,7 @@ class ManualNeutralAtomBackendSampler:
         graph: ConflictGraph,
         positions: np.ndarray,
     ) -> tuple[object, ...] | None:
+        """Build a backend-evolution cache key or disable caching with ``None``."""
         if self.cache_decimals is None:
             return None
         rounded_utilities = tuple(np.round(utilities, self.cache_decimals))
@@ -654,7 +1053,35 @@ class ManualNeutralAtomBackendSampler:
     def probabilities(
         self, utilities: np.ndarray, graph: ConflictGraph
     ) -> np.ndarray:
-        """Evolve once and return the final computational-basis distribution."""
+        """Run one backend evolution and return its basis distribution.
+
+        Parameters
+        ----------
+        utilities:
+            One finite local-detuning utility per graph node.
+        graph:
+            Abstract constraints used for shape validation and cache identity.
+            Its edges are not passed directly to the physical backend.
+
+        Returns
+        -------
+        numpy.ndarray
+            Normalized vector of length ``2**graph.nodes`` in backend bitstring
+            order, which :meth:`sample` converts to graph-node tuples.
+
+        Raises
+        ------
+        ValueError
+            If utility or position shapes are invalid, or utilities are not
+            finite.
+
+        Notes
+        -----
+        When the backend exposes ``get_state``, probabilities are exact for the
+        simulated final state.  Otherwise they are estimated from at least 4096
+        fixed-seed calibration shots.  This fallback is a simulator integration
+        convenience, not a hardware sampling protocol.
+        """
         utilities = np.asarray(utilities, dtype=float)
         if utilities.shape != (graph.nodes,):
             raise ValueError("utilities must contain one value per graph node")
@@ -709,6 +1136,23 @@ class ManualNeutralAtomBackendSampler:
         candidates: int,
         rng: np.random.Generator,
     ) -> list[Action]:
+        """Sample candidates from the downloaded backend distribution.
+
+        Parameters
+        ----------
+        utilities, graph, candidates, rng:
+            See :meth:`hybrid_qrl.core.CandidateSampler.sample`.
+
+        Returns
+        -------
+        list of Action
+            Exactly ``candidates`` action tuples in graph-node order.
+
+        Raises
+        ------
+        ValueError
+            If the candidate budget, utility vector, or positions are invalid.
+        """
         if candidates <= 0:
             raise ValueError("candidates must be positive")
         probabilities = self.probabilities(utilities, graph)
