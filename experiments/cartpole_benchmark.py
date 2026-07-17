@@ -78,7 +78,10 @@ class CartPoleEnv:
             cfg.half_pole_length
             * (4.0 / 3.0 - cfg.mass_pole * cosine**2 / total_mass)
         )
-        x_acceleration = temporary - pole_mass_length * angle_acceleration * cosine / total_mass
+        x_acceleration = (
+            temporary
+            - pole_mass_length * angle_acceleration * cosine / total_mass
+        )
 
         x += cfg.time_step * x_velocity
         x_velocity += cfg.time_step * x_acceleration
@@ -233,7 +236,9 @@ class HybridPolicy:
             "action_steps": self.steps,
             "raw_feasible_rate": self.raw_feasible / max(1, self.raw_candidates),
             "fallback_rate": self.fallbacks / max(1, self.steps),
-            "mean_unique_feasible_candidates": self.unique_feasible / max(1, self.steps),
+            "mean_unique_feasible_candidates": (
+                self.unique_feasible / max(1, self.steps)
+            ),
         }
 
 
@@ -269,6 +274,23 @@ def heldout_agreement(
 ) -> float:
     predictions = np.array([policy(state) for state in observations], dtype=int)
     return float(np.mean(predictions == labels))
+
+
+def heldout_agreements(
+    policy: Callable[[np.ndarray], int],
+    observations: np.ndarray,
+    labels: np.ndarray,
+    reference_policy: Callable[[np.ndarray], int],
+) -> tuple[float, float]:
+    """Compare one stochastic policy with teacher labels and classical argmax."""
+    predictions = np.array([policy(state) for state in observations], dtype=int)
+    references = np.array(
+        [reference_policy(state) for state in observations], dtype=int
+    )
+    return (
+        float(np.mean(predictions == labels)),
+        float(np.mean(predictions == references)),
+    )
 
 
 def run_benchmark(
@@ -333,6 +355,18 @@ def run_benchmark(
     # Cap stochastic agreement evaluation so it does not dominate the rollout.
     agreement_count = min(2_000, len(test_observations))
     agreement_slice = slice(0, agreement_count)
+    classical_teacher_agreement, classical_linear_agreement = heldout_agreements(
+        classical_candidate,
+        test_observations[agreement_slice],
+        test_labels[agreement_slice],
+        direct,
+    )
+    quantum_teacher_agreement, quantum_linear_agreement = heldout_agreements(
+        quantum_candidate,
+        test_observations[agreement_slice],
+        test_labels[agreement_slice],
+        direct,
+    )
     dataset_metrics = {
         "samples": len(observations),
         "training_samples": len(train_indices),
@@ -342,16 +376,12 @@ def run_benchmark(
         "linear_test_accuracy": heldout_agreement(
             direct, test_observations, test_labels
         ),
-        "classical_candidate_test_agreement": heldout_agreement(
-            classical_candidate,
-            test_observations[agreement_slice],
-            test_labels[agreement_slice],
+        "classical_candidate_test_agreement": classical_teacher_agreement,
+        "classical_candidate_to_linear_test_agreement": (
+            classical_linear_agreement
         ),
-        "quantum_candidate_test_agreement": heldout_agreement(
-            quantum_candidate,
-            test_observations[agreement_slice],
-            test_labels[agreement_slice],
-        ),
+        "quantum_candidate_test_agreement": quantum_teacher_agreement,
+        "quantum_candidate_to_linear_test_agreement": quantum_linear_agreement,
         "stochastic_agreement_samples": agreement_count,
     }
 
