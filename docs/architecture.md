@@ -240,14 +240,22 @@ enough that K and total latency do not grow exponentially.
 
 `cartpole_benchmark.py` contains a dependency-free implementation of the
 standard CartPole-v1 dynamics. It generates an offline trajectory dataset,
-fits a basic linear policy, and evaluates four action selectors on identical
+fits a basic linear policy, and evaluates common action selectors on identical
 environment seeds:
 
 - uniformly random control;
 - direct classical linear-policy argmax;
+- epsilon-greedy exploration;
+- Boltzmann/softmax action sampling;
+- uniform random shooting with best-of-K utility reranking;
+- softmax proposals with best-of-K utility reranking;
 - classical randomized-greedy candidates followed by critic reranking;
 - two-qubit Rydberg-emulated candidates followed by the same safety filter and
   critic.
+
+The best-of-K classical policies use the same candidate budget as the quantum
+sampler. This isolates candidate-distribution quality from the learned utility
+model and avoids treating weak random control as the primary baseline.
 
 CartPole uses a one-hot two-bit action, so its graph contains one conflict edge
 and an exactly-one cardinality constraint. This tests the integration contract,

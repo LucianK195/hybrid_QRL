@@ -13,9 +13,11 @@ For every problem size and state distribution, compare samplers under:
 1. an equal candidate budget `K`; and
 2. an equal end-to-end decision-time budget where measurable.
 
-At minimum include direct classical argmax, randomized weighted greedy, and the
-quantum or quantum-inspired sampler. For small instances, include an exact
-solver only as an evaluation oracle.
+At minimum include direct classical argmax, epsilon-greedy, Boltzmann/softmax,
+uniform random shooting best-of-K, randomized weighted greedy best-of-K, and
+the quantum or quantum-inspired sampler. Use identical utility models,
+candidate budgets, and evaluation seeds for sampler-level comparisons. For
+small instances, include an exact solver only as an evaluation oracle.
 
 ## Required metrics
 
@@ -51,4 +53,3 @@ For trace-driven scheduling, document the conversion from a trace snapshot to:
 This is especially important for Alibaba Cluster Trace experiments because
 CPU, memory, and GPU capacities are cumulative constraints and generally cannot
 be represented exactly by a pairwise conflict graph.
-
