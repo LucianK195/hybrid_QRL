@@ -1,3 +1,4 @@
 CITATION.cff
 CONTRIBUTING.md
 pyproject.toml
+__pycache__/
