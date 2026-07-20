@@ -76,12 +76,27 @@ Run the CartPole experiment:
   --quantum-backend dense --candidates 8
 ```
 
+Run the 20-seed dynamic dispatch benchmark:
+
+```powershell
+.\.venv\Scripts\python.exe `
+  .\hybrid_qrl\experiments\dispatch_scaling_benchmark.py `
+  --seeds 20 --train-episodes 320 --k 16 --latency-ms 20
+```
+
+This benchmark trains a reward-only actor-critic and compares time-limited
+MILP, simulated annealing, MCMC, local search, beam search, randomized greedy,
+learned autoregressive proposals, and a classical Rydberg-blockade surrogate.
+It covers 20, 40, 60, and 100 binary decisions under equal-K and equal-latency
+protocols. The generated raw records and report are written to `results/`.
+
 ## Documentation
 
 - [Architecture and extension guide](docs/architecture.md)
 - [Source API reference](docs/api_reference.md)
 - [Manual neutral-atom backend integration](docs/manual_backend_integration.md)
 - [Experiment and reporting protocol](docs/research_protocol.md)
+- [Dynamic dispatch benchmark](docs/dispatch_benchmark.md)
 - [Migration from the former template layout](docs/migration.md)
 
 The editable diagrams remain in the repository-level `figures/` directory, and
