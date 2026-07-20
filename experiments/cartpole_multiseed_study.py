@@ -31,6 +31,10 @@ from cartpole_benchmark import run_benchmark
 POLICY_KEYS = (
     "random",
     "classical_linear_argmax",
+    "classical_epsilon_greedy",
+    "classical_softmax",
+    "classical_uniform_best_of_k",
+    "classical_softmax_best_of_k",
     "classical_greedy_candidates",
     "hybrid_rydberg_candidates",
 )
@@ -139,6 +143,34 @@ def aggregate_trials(trials: list[dict[str, object]]) -> list[dict[str, object]]
             for item in group
             for value in item["evaluation"]["random"]["episode_returns"]
         ]
+        epsilon_episodes = [
+            value
+            for item in group
+            for value in item["evaluation"]["classical_epsilon_greedy"][
+                "episode_returns"
+            ]
+        ]
+        softmax_episodes = [
+            value
+            for item in group
+            for value in item["evaluation"]["classical_softmax"][
+                "episode_returns"
+            ]
+        ]
+        uniform_best_of_k_episodes = [
+            value
+            for item in group
+            for value in item["evaluation"]["classical_uniform_best_of_k"][
+                "episode_returns"
+            ]
+        ]
+        softmax_best_of_k_episodes = [
+            value
+            for item in group
+            for value in item["evaluation"]["classical_softmax_best_of_k"][
+                "episode_returns"
+            ]
+        ]
         greedy_episodes = [
             value
             for item in group
@@ -228,9 +260,49 @@ def aggregate_trials(trials: list[dict[str, object]]) -> list[dict[str, object]]
                 "random_solved_rate": _mean(
                     value >= 475 for value in random_episodes
                 ),
+                "classical_epsilon_greedy_mean_return": _mean(
+                    epsilon_episodes
+                ),
+                "classical_epsilon_greedy_solved_rate": _mean(
+                    value >= 475 for value in epsilon_episodes
+                ),
+                "classical_softmax_mean_return": _mean(softmax_episodes),
+                "classical_softmax_solved_rate": _mean(
+                    value >= 475 for value in softmax_episodes
+                ),
+                "classical_uniform_best_of_k_mean_return": _mean(
+                    uniform_best_of_k_episodes
+                ),
+                "classical_uniform_best_of_k_solved_rate": _mean(
+                    value >= 475 for value in uniform_best_of_k_episodes
+                ),
+                "classical_uniform_best_of_k_return_match_rate": _mean(
+                    candidate == direct
+                    for candidate, direct in zip(
+                        uniform_best_of_k_episodes, direct_episodes
+                    )
+                ),
+                "classical_softmax_best_of_k_mean_return": _mean(
+                    softmax_best_of_k_episodes
+                ),
+                "classical_softmax_best_of_k_solved_rate": _mean(
+                    value >= 475 for value in softmax_best_of_k_episodes
+                ),
+                "classical_softmax_best_of_k_return_match_rate": _mean(
+                    candidate == direct
+                    for candidate, direct in zip(
+                        softmax_best_of_k_episodes, direct_episodes
+                    )
+                ),
                 "classical_greedy_mean_return": _mean(greedy_episodes),
                 "classical_greedy_solved_rate": _mean(
                     value >= 475 for value in greedy_episodes
+                ),
+                "classical_greedy_return_match_rate": _mean(
+                    candidate == direct
+                    for candidate, direct in zip(
+                        greedy_episodes, direct_episodes
+                    )
                 ),
                 "hybrid_mean_return": _mean(hybrid_episodes),
                 "hybrid_seed_mean_std": _sample_std(hybrid_means),
@@ -334,14 +406,24 @@ def render_markdown(
             "",
             "## Classical controls",
             "",
-            "| K | Random mean | Direct argmax mean | Greedy best-of-K mean |",
-            "|---:|---:|---:|---:|",
+            "All values are pooled mean episode returns. Epsilon-greedy uses "
+            f"epsilon={config['epsilon']}; softmax uses "
+            f"temperature={config['softmax_temperature']}.",
+            "",
+            "| K | Random | Argmax | Epsilon-greedy | Softmax | Uniform BoK | "
+            "Softmax BoK | Weighted greedy BoK |",
+            "|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in control_rows:
         lines.append(
-            f"| {row['candidate_budget_K']} | {row['random_mean_return']:.1f} | "
+            f"| {row['candidate_budget_K']} | "
+            f"{row['random_mean_return']:.1f} | "
             f"{row['classical_argmax_mean_return']:.1f} | "
+            f"{row['classical_epsilon_greedy_mean_return']:.1f} | "
+            f"{row['classical_softmax_mean_return']:.1f} | "
+            f"{row['classical_uniform_best_of_k_mean_return']:.1f} | "
+            f"{row['classical_softmax_best_of_k_mean_return']:.1f} | "
             f"{row['classical_greedy_mean_return']:.1f} |"
         )
 
@@ -352,6 +434,43 @@ def render_markdown(
         if (backend, maximum_budget) in lookup
     ]
     lines.extend(["", "## Main findings", ""])
+    exact_control_budgets = {}
+    control_metrics = {
+        "uniform random shooting": (
+            "classical_uniform_best_of_k_return_match_rate"
+        ),
+        "softmax best-of-K": (
+            "classical_softmax_best_of_k_return_match_rate"
+        ),
+        "randomized weighted greedy": (
+            "classical_greedy_return_match_rate"
+        ),
+    }
+    for label, metric in control_metrics.items():
+        exact_control_budgets[label] = next(
+            (
+                row["candidate_budget_K"]
+                for row in control_rows
+                if row[metric] == 1.0
+            ),
+            None,
+        )
+    if all(value is not None for value in exact_control_budgets.values()):
+        lines.extend(
+            [
+                "The classical candidate baselines recovered every paired argmax",
+                "episode at different budgets: randomized weighted greedy by "
+                f"K={exact_control_budgets['randomized weighted greedy']}, softmax",
+                "best-of-K by "
+                f"K={exact_control_budgets['softmax best-of-K']}, and uniform random",
+                "shooting by "
+                f"K={exact_control_budgets['uniform random shooting']}. This strong",
+                "classical performance is the relevant reference for sampler-level",
+                "advantage, rather than random or single-sample softmax alone.",
+                "",
+            ]
+        )
+
     if maximum_rows and all(
         row["quantum_candidate_to_linear_test_agreement"] == 1.0
         and row["episode_return_match_rate"] == 1.0
@@ -366,6 +485,9 @@ def render_markdown(
                 "and solved rate "
                 f"({_percent(reference['hybrid_solved_rate'])}) exactly matched the",
                 "direct classical controller across all evaluation episodes.",
+                "Because the strongest classical candidate methods reached exact",
+                "recovery at equal or smaller K, this CartPole result does not show",
+                "a quantum sampling advantage.",
                 "",
             ]
         )
@@ -501,6 +623,8 @@ def main() -> None:
     )
     parser.add_argument("--training-episodes", type=int, default=64)
     parser.add_argument("--evaluation-episodes", type=int, default=30)
+    parser.add_argument("--epsilon", type=float, default=0.05)
+    parser.add_argument("--softmax-temperature", type=float, default=0.25)
     parser.add_argument(
         "--output",
         type=Path,
@@ -516,6 +640,10 @@ def main() -> None:
         parser.error("candidate budgets must be positive")
     if args.training_episodes <= 0 or args.evaluation_episodes <= 0:
         parser.error("episode counts must be positive")
+    if not 0.0 <= args.epsilon <= 1.0:
+        parser.error("epsilon must be between zero and one")
+    if args.softmax_temperature <= 0.0:
+        parser.error("softmax temperature must be positive")
 
     config = {
         "backends": args.backends,
@@ -523,6 +651,8 @@ def main() -> None:
         "seeds": args.seeds,
         "training_episodes": args.training_episodes,
         "evaluation_episodes": args.evaluation_episodes,
+        "epsilon": args.epsilon,
+        "softmax_temperature": args.softmax_temperature,
         "cache_decimals": 2,
     }
     combinations = [
@@ -547,6 +677,8 @@ def main() -> None:
             seed=seed,
             dataset_output=None,
             quantum_backend=backend,
+            epsilon=args.epsilon,
+            softmax_temperature=args.softmax_temperature,
         )
         trials.append(_compact_trial(report, time.perf_counter() - trial_start))
 

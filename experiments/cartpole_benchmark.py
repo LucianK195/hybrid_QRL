@@ -242,6 +242,73 @@ class HybridPolicy:
         }
 
 
+class EpsilonGreedyPolicy:
+    """Standard value-based exploration around the learned linear argmax."""
+
+    def __init__(self, model: LinearPolicy, epsilon: float, seed: int):
+        if not 0.0 <= epsilon <= 1.0:
+            raise ValueError("epsilon must be between zero and one")
+        self.model = model
+        self.epsilon = epsilon
+        self.rng = np.random.default_rng(seed)
+
+    def __call__(self, state: np.ndarray) -> int:
+        if self.rng.random() < self.epsilon:
+            return int(self.rng.integers(0, 2))
+        return self.model.action(state)
+
+
+class SampledUtilityPolicy:
+    """Sample discrete proposals and retain the highest-utility action.
+
+    ``proposal="uniform"`` is the random-shooting baseline common in planning
+    and model-predictive control. ``proposal="softmax"`` is Boltzmann action
+    sampling, a standard RL exploration baseline. Setting ``candidates=1``
+    gives ordinary stochastic softmax action selection; larger values implement
+    a classical best-of-K comparison with the hybrid quantum sampler.
+    """
+
+    def __init__(
+        self,
+        model: LinearPolicy,
+        candidates: int,
+        seed: int,
+        proposal: str,
+        temperature: float = 0.25,
+    ):
+        if candidates <= 0:
+            raise ValueError("candidates must be positive")
+        if proposal not in {"uniform", "softmax"}:
+            raise ValueError("proposal must be 'uniform' or 'softmax'")
+        if temperature <= 0.0:
+            raise ValueError("temperature must be positive")
+        self.model = model
+        self.candidates = candidates
+        self.proposal = proposal
+        self.temperature = temperature
+        self.rng = np.random.default_rng(seed)
+
+    def __call__(self, state: np.ndarray) -> int:
+        utilities = self.model.utilities(state)
+        if self.proposal == "uniform":
+            probabilities = np.full(2, 0.5, dtype=float)
+        else:
+            logits = (utilities - utilities.max()) / self.temperature
+            probabilities = np.exp(logits)
+            probabilities /= probabilities.sum()
+        proposals = self.rng.choice(
+            2,
+            size=self.candidates,
+            p=probabilities,
+        )
+        return int(
+            max(
+                map(int, proposals),
+                key=lambda action: (utilities[action], action),
+            )
+        )
+
+
 def evaluate_policy(
     policy: Callable[[np.ndarray], int], seeds: list[int]
 ) -> dict[str, object]:
@@ -300,6 +367,8 @@ def run_benchmark(
     seed: int,
     dataset_output: Path | None,
     quantum_backend: str = "dense",
+    epsilon: float = 0.05,
+    softmax_temperature: float = 0.25,
 ) -> dict[str, object]:
     observations, labels, teacher_returns = collect_dataset(
         training_episodes, seed_start=seed + 1_000
@@ -324,6 +393,31 @@ def run_benchmark(
     direct = lambda state: model.action(state)
     random_rng = np.random.default_rng(seed + 3_000)
     random_policy = lambda state: int(random_rng.integers(0, 2))
+    epsilon_greedy = EpsilonGreedyPolicy(
+        model,
+        epsilon=epsilon,
+        seed=seed + 3_100,
+    )
+    softmax_policy = SampledUtilityPolicy(
+        model,
+        candidates=1,
+        seed=seed + 3_200,
+        proposal="softmax",
+        temperature=softmax_temperature,
+    )
+    uniform_best_of_k = SampledUtilityPolicy(
+        model,
+        candidates=candidates,
+        seed=seed + 3_300,
+        proposal="uniform",
+    )
+    softmax_best_of_k = SampledUtilityPolicy(
+        model,
+        candidates=candidates,
+        seed=seed + 3_400,
+        proposal="softmax",
+        temperature=softmax_temperature,
+    )
 
     classical_candidate = HybridPolicy(
         model,
@@ -422,6 +516,8 @@ def run_benchmark(
             "candidate_budget_K": candidates,
             "quantum_emulator_cache_decimals": quantum_sampler.cache_decimals,
             "quantum_backend": quantum_backend,
+            "epsilon_greedy_epsilon": epsilon,
+            "softmax_temperature": softmax_temperature,
         },
         "dataset": dataset_metrics,
         "learned_linear_policy": {
@@ -433,6 +529,18 @@ def run_benchmark(
         "evaluation": {
             "random": evaluate_policy(random_policy, evaluation_seeds),
             "classical_linear_argmax": evaluate_policy(direct, evaluation_seeds),
+            "classical_epsilon_greedy": evaluate_policy(
+                epsilon_greedy, evaluation_seeds
+            ),
+            "classical_softmax": evaluate_policy(
+                softmax_policy, evaluation_seeds
+            ),
+            "classical_uniform_best_of_k": evaluate_policy(
+                uniform_best_of_k, evaluation_seeds
+            ),
+            "classical_softmax_best_of_k": evaluate_policy(
+                softmax_best_of_k, evaluation_seeds
+            ),
             "classical_greedy_candidates": classical_result,
             "hybrid_rydberg_candidates": quantum_result,
         },
@@ -445,6 +553,8 @@ def main() -> None:
     parser.add_argument("--evaluation-episodes", type=int, default=30)
     parser.add_argument("--candidates", type=int, default=8)
     parser.add_argument("--seed", type=int, default=17)
+    parser.add_argument("--epsilon", type=float, default=0.05)
+    parser.add_argument("--softmax-temperature", type=float, default=0.25)
     parser.add_argument(
         "--quantum-backend",
         choices=("dense", "qutip", "manual"),
@@ -465,6 +575,10 @@ def main() -> None:
         parser.error("episode counts must be positive")
     if args.candidates <= 0:
         parser.error("--candidates must be positive")
+    if not 0.0 <= args.epsilon <= 1.0:
+        parser.error("--epsilon must be between zero and one")
+    if args.softmax_temperature <= 0.0:
+        parser.error("--softmax-temperature must be positive")
 
     report = run_benchmark(
         args.training_episodes,
@@ -473,6 +587,8 @@ def main() -> None:
         args.seed,
         args.dataset_output,
         args.quantum_backend,
+        args.epsilon,
+        args.softmax_temperature,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

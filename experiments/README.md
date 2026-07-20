@@ -25,3 +25,9 @@ Run the complete multi-seed CartPole study with:
 This produces `results/cartpole_multiseed_results.json` with compact per-trial
 records and `results/cartpole_multiseed_report.md` with aggregate tables,
 paired confidence intervals, and limitations.
+
+The classical controls include direct argmax, epsilon-greedy, single-sample
+Boltzmann/softmax, uniform random shooting best-of-K, softmax best-of-K, and
+randomized weighted greedy best-of-K. These share the learned linear utility
+model; they compare action-selection mechanisms rather than different training
+algorithms such as PPO or DQN.

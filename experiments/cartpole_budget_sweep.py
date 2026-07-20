@@ -15,6 +15,8 @@ def main() -> None:
     parser.add_argument("--training-episodes", type=int, default=64)
     parser.add_argument("--evaluation-episodes", type=int, default=30)
     parser.add_argument("--seed", type=int, default=17)
+    parser.add_argument("--epsilon", type=float, default=0.05)
+    parser.add_argument("--softmax-temperature", type=float, default=0.25)
     parser.add_argument(
         "--quantum-backend",
         choices=("dense", "qutip", "manual"),
@@ -33,6 +35,10 @@ def main() -> None:
     args = parser.parse_args()
     if not args.budgets or any(budget <= 0 for budget in args.budgets):
         parser.error("all candidate budgets must be positive")
+    if not 0.0 <= args.epsilon <= 1.0:
+        parser.error("--epsilon must be between zero and one")
+    if args.softmax_temperature <= 0.0:
+        parser.error("--softmax-temperature must be positive")
 
     reports = {}
     for index, budget in enumerate(args.budgets):
@@ -43,6 +49,8 @@ def main() -> None:
             seed=args.seed,
             dataset_output=args.dataset_output if index == 0 else None,
             quantum_backend=args.quantum_backend,
+            epsilon=args.epsilon,
+            softmax_temperature=args.softmax_temperature,
         )
         reports[str(budget)] = report
 
@@ -56,6 +64,18 @@ def main() -> None:
                 "candidate_budget_K": budget,
                 "classical_linear_mean_return": evaluation[
                     "classical_linear_argmax"
+                ]["mean_return"],
+                "classical_epsilon_greedy_mean_return": evaluation[
+                    "classical_epsilon_greedy"
+                ]["mean_return"],
+                "classical_softmax_mean_return": evaluation[
+                    "classical_softmax"
+                ]["mean_return"],
+                "classical_uniform_best_of_k_mean_return": evaluation[
+                    "classical_uniform_best_of_k"
+                ]["mean_return"],
+                "classical_softmax_best_of_k_mean_return": evaluation[
+                    "classical_softmax_best_of_k"
                 ]["mean_return"],
                 "classical_greedy_mean_return": evaluation[
                     "classical_greedy_candidates"
@@ -82,6 +102,8 @@ def main() -> None:
             "evaluation_episodes": args.evaluation_episodes,
             "budgets": args.budgets,
             "quantum_backend": args.quantum_backend,
+            "epsilon": args.epsilon,
+            "softmax_temperature": args.softmax_temperature,
         },
         "dataset": first["dataset"],
         "summary": compact_rows,
