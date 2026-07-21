@@ -10,6 +10,9 @@ reusable library implementation.
 - `dispatch_scaling_benchmark.py`: reward-trained dynamic resource dispatch at
   20–100 binary decisions with serious optimization/search baselines, equal-K
   and equal-latency protocols, dynamic rollouts, and robustness sweeps.
+- `conditional_advantage_study.py`: sampler-in-loop reward training,
+  epsilon-optimal/K95 metrics, dense/QuTiP/manual calibration at 8–12 qubits,
+  an eight-qubit dynamic pipeline proof, and a 20+20-seed physical phase map.
 
 Run scripts from the repository root after installing `hybrid_qrl` in editable
 mode. Their default datasets and reports are written to the repository-level
@@ -49,3 +52,43 @@ status, MIP gap, candidate counts, raw feasibility, post-repair candidates,
 critic score, realized reward, reference regret, latency, and latency-budget
 compliance. The Rydberg path in this experiment is explicitly a scalable
 classical surrogate; it is not a neutral-atom hardware timing result.
+
+Run the conditional study with:
+
+```powershell
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\conditional_advantage_study.py `
+  --seeds 20 --training-iterations 140 `
+  --calibration-seeds 20 --phase-seeds 40 --k 16
+```
+
+This produces `results/conditional_advantage_results.json` and
+`results/conditional_advantage_report.md`. The report uses a claim ladder:
+safe pipeline proof, surrogate opportunity, distribution transfer, and manual
+geometry-backend quality. Only passing every gate would justify a conditional
+quantum-assisted advantage claim.
+
+## Held-out dispatch graph dataset
+
+`export_dispatch_test_dataset.py` freezes the paired held-out scaling states as
+a JSON Lines graph dataset with geometry, authoritative edges, node features,
+linear reward terms, reference reward, and a SHA-256 manifest.
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe `
+  .\hybrid_qrl\experiments\export_dispatch_test_dataset.py
+```
+
+The default dataset contains 80 test-only instances: 20 seeds at each of 20,
+40, 60, and 100 binary decisions. `datasets/dispatch_test_v1.jsonl` stores one
+graph per line and `datasets/dispatch_test_v1_manifest.json` records provenance,
+counts, reward semantics, and content hashes.
+
+After exporting the dataset, create the five editable SVG figures with:
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe `
+  .\hybrid_qrl\experiments\plot_dispatch_benchmark.py
+```

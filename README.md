@@ -90,6 +90,22 @@ learned autoregressive proposals, and a classical Rydberg-blockade surrogate.
 It covers 20, 40, 60, and 100 binary decisions under equal-K and equal-latency
 protocols. The generated raw records and report are written to `results/`.
 
+Run the conditional-advantage calibration study:
+
+```powershell
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\conditional_advantage_study.py `
+  --seeds 20 --training-iterations 140 `
+  --calibration-seeds 20 --phase-seeds 40 --k 16
+```
+
+This study trains through the sampler using reward-only SPSA, calculates
+epsilon-optimal probability and K95, validates the eight-qubit end-to-end path,
+calibrates dense/QuTiP/manual distributions at 8–12 qubits, and searches a
+16-decision physical phase map. Its separate safety, surrogate-opportunity, and
+calibration-transfer gates prevent surrogate results from being mislabeled as
+quantum-backend evidence.
+
 ## Documentation
 
 - [Architecture and extension guide](docs/architecture.md)
@@ -97,6 +113,7 @@ protocols. The generated raw records and report are written to `results/`.
 - [Manual neutral-atom backend integration](docs/manual_backend_integration.md)
 - [Experiment and reporting protocol](docs/research_protocol.md)
 - [Dynamic dispatch benchmark](docs/dispatch_benchmark.md)
+- [Conditional quantum-assisted advantage study](docs/conditional_advantage_study.md)
 - [Migration from the former template layout](docs/migration.md)
 
 The editable diagrams remain in the repository-level `figures/` directory, and

@@ -38,6 +38,7 @@ class DispatchConfig:
     graph_family: str = "unit_disk"
     density: float = 0.12
     utility_distribution: str = "uniform"
+    utility_correlation: str = "none"
     horizon: int = 24
     min_deadline: int = 3
     max_deadline: int = 12
@@ -45,14 +46,18 @@ class DispatchConfig:
     grid_jitter: float = 0.08
 
     def __post_init__(self) -> None:
-        if not 20 <= self.n_jobs <= 100:
-            raise ValueError("n_jobs must be between 20 and 100")
-        if self.graph_family not in {"unit_disk", "grid"}:
-            raise ValueError("graph_family must be 'unit_disk' or 'grid'")
+        if not 8 <= self.n_jobs <= 100:
+            raise ValueError("n_jobs must be between 8 and 100")
+        if self.graph_family not in {"unit_disk", "grid", "clustered"}:
+            raise ValueError(
+                "graph_family must be 'unit_disk', 'grid', or 'clustered'"
+            )
         if not 0.0 < self.density < 1.0:
             raise ValueError("density must lie strictly between zero and one")
         if self.utility_distribution not in {"uniform", "lognormal", "bimodal"}:
             raise ValueError("unsupported utility distribution")
+        if self.utility_correlation not in {"none", "spatial", "degree"}:
+            raise ValueError("unsupported utility correlation")
         if self.horizon <= 0:
             raise ValueError("horizon must be positive")
         if not 1 <= self.min_deadline <= self.max_deadline:
@@ -111,6 +116,7 @@ def perturbed_physical_graph(
     state: DispatchState,
     relative_error: float,
     rng: np.random.Generator,
+    radius_scale: float = 1.0,
 ) -> ConflictGraph:
     """Build the graph seen by hardware after position-calibration error.
 
@@ -121,11 +127,13 @@ def perturbed_physical_graph(
 
     if relative_error < 0:
         raise ValueError("relative_error must be non-negative")
+    if radius_scale <= 0:
+        raise ValueError("radius_scale must be positive")
     noisy = state.positions + rng.normal(
         scale=relative_error * state.blockade_radius,
         size=state.positions.shape,
     )
-    return graph_from_positions(noisy, state.blockade_radius)
+    return graph_from_positions(noisy, state.blockade_radius * radius_scale)
 
 
 class DispatchEnvironment:
@@ -146,7 +154,7 @@ class DispatchEnvironment:
         n = self.config.n_jobs
         if self.config.graph_family == "unit_disk":
             positions = self.rng.uniform(0.0, 1.0, size=(n, 2))
-        else:
+        elif self.config.graph_family == "grid":
             side = ceil(sqrt(n))
             lattice = np.asarray(
                 [(column, row) for row in range(side) for column in range(side)],
@@ -158,6 +166,14 @@ class DispatchEnvironment:
                 scale=self.config.grid_jitter * spacing,
                 size=lattice.shape,
             )
+        else:
+            centers = np.asarray(((0.28, 0.30), (0.72, 0.32), (0.50, 0.72)))
+            assignments = self.rng.integers(0, len(centers), size=n)
+            positions = centers[assignments] + self.rng.normal(
+                scale=0.11,
+                size=(n, 2),
+            )
+            positions = np.clip(positions, 0.0, 1.0)
 
         distances = []
         for left in range(n):
@@ -175,22 +191,38 @@ class DispatchEnvironment:
     def _sample_values(self, count: int) -> np.ndarray:
         distribution = self.config.utility_distribution
         if distribution == "uniform":
-            return self.rng.uniform(0.1, 1.0, size=count)
-        if distribution == "lognormal":
+            values = self.rng.uniform(0.1, 1.0, size=count)
+        elif distribution == "lognormal":
             values = self.rng.lognormal(mean=-0.35, sigma=0.75, size=count)
-            return np.clip(values / 3.0, 0.05, 1.5)
-        high = self.rng.random(count) < 0.22
-        return np.where(
-            high,
-            self.rng.uniform(0.8, 1.25, size=count),
-            self.rng.uniform(0.05, 0.35, size=count),
-        )
+            values = np.clip(values / 3.0, 0.05, 1.5)
+        else:
+            high = self.rng.random(count) < 0.22
+            values = np.where(
+                high,
+                self.rng.uniform(0.8, 1.25, size=count),
+                self.rng.uniform(0.05, 0.35, size=count),
+            )
+        return values
 
     def _replace_jobs(self, mask: np.ndarray) -> None:
         count = int(np.count_nonzero(mask))
         if count == 0:
             return
-        self._values[mask] = self._sample_values(count)
+        values = self._sample_values(count)
+        nodes = np.flatnonzero(mask)
+        if self.config.utility_correlation == "spatial":
+            coordinates = self._positions[nodes]
+            signal = 0.5 + 0.25 * np.sin(2.0 * np.pi * coordinates[:, 0])
+            signal += 0.25 * np.cos(2.0 * np.pi * coordinates[:, 1])
+            values = 0.65 * values + 0.35 * np.clip(signal, 0.0, 1.0)
+        elif self.config.utility_correlation == "degree":
+            degrees = np.asarray(
+                [len(self._graph.adjacency()[node]) for node in nodes],
+                dtype=float,
+            )
+            degree_signal = degrees / max(float(degrees.max()), 1.0)
+            values = 0.65 * values + 0.35 * degree_signal
+        self._values[mask] = values
         self._ages[mask] = 0
         self._deadlines[mask] = self.rng.integers(
             self.config.min_deadline,

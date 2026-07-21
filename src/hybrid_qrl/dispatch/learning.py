@@ -157,6 +157,8 @@ class TrainingConfig:
     horizon: int = 24
     train_sizes: tuple[int, ...] = (20, 40, 60)
     densities: tuple[float, ...] = (0.08, 0.12, 0.18)
+    graph_families: tuple[str, ...] = ("unit_disk",)
+    utility_correlations: tuple[str, ...] = ("none",)
     gamma: float = 0.97
     actor_learning_rate: float = 0.012
     critic_learning_rate: float = 0.035
@@ -190,7 +192,13 @@ def train_actor_critic(
         n_jobs = int(rng.choice(config.train_sizes))
         density = float(rng.choice(config.densities))
         environment = DispatchEnvironment(
-            DispatchConfig(n_jobs=n_jobs, density=density, horizon=config.horizon),
+            DispatchConfig(
+                n_jobs=n_jobs,
+                density=density,
+                graph_family=str(rng.choice(config.graph_families)),
+                utility_correlation=str(rng.choice(config.utility_correlations)),
+                horizon=config.horizon,
+            ),
             seed=config.seed + 10_003 * episode,
         )
         state = environment.state()

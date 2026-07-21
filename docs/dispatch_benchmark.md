@@ -35,6 +35,10 @@ application graph remains the authoritative constraint. Geometry error creates
 a separate physical graph; every measured proposal is repaired and validated
 against the true application graph before execution.
 
+Small-backend calibration additionally normalizes each register to unit minimum
+atom separation. This prevents unphysical near-coincident random coordinates
+from producing numerically extreme `C6/r^6` interactions.
+
 ## Learned model
 
 `LinearAutoregressiveActor` shares one feature-weight vector across all nodes,

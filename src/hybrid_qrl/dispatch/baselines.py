@@ -46,6 +46,7 @@ class ProposalConfig:
     latency_ms: float | None = None
     max_runtime_ms: float = 2_000.0
     geometry_error: float = 0.0
+    blockade_radius_scale: float = 1.0
     readout_noise: float = 0.0
     pulse_schedule: str = "balanced"
     cache_precision: int | None = 2
@@ -60,6 +61,8 @@ class ProposalConfig:
             raise ValueError("max_runtime_ms must be positive")
         if self.geometry_error < 0:
             raise ValueError("geometry_error must be non-negative")
+        if self.blockade_radius_scale <= 0:
+            raise ValueError("blockade_radius_scale must be positive")
         if not 0 <= self.readout_noise <= 1:
             raise ValueError("readout_noise must be in [0, 1]")
         if self.pulse_schedule not in {"short", "balanced", "adiabatic"}:
@@ -74,6 +77,7 @@ class CandidateBatch:
 
     method: str
     actions: tuple[Action, ...]
+    repaired_actions: tuple[Action, ...]
     raw_generated: int
     raw_feasible: int
     unique_feasible: int
@@ -380,7 +384,12 @@ def _rydberg_surrogate_candidates(
     deadline: float,
     config: ProposalConfig,
 ) -> list[Action]:
-    physical_graph = perturbed_physical_graph(state, config.geometry_error, rng)
+    physical_graph = perturbed_physical_graph(
+        state,
+        config.geometry_error,
+        rng,
+        radius_scale=config.blockade_radius_scale,
+    )
     adjacency = physical_graph.adjacency()
     cached = (
         weights.copy()
@@ -468,6 +477,7 @@ def generate_candidates(
     return CandidateBatch(
         method=method,
         actions=unique,
+        repaired_actions=tuple(repaired),
         raw_generated=len(raw),
         raw_feasible=raw_feasible,
         unique_feasible=len(unique),
