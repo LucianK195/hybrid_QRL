@@ -106,6 +106,34 @@ calibrates dense/QuTiP/manual distributions at 8–12 qubits, and searches a
 calibration-transfer gates prevent surrogate results from being mislabeled as
 quantum-backend evidence.
 
+Run the latency-aware delayed/asynchronous extension:
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\latency_aware_dispatch.py
+```
+
+The default run assigns 1,000 ms to each environment step, applies a 3,000 ms
+quantum-result deadline, repairs stale job-identity actions, and compares a
+blocking quantum policy with asynchronous beam and greedy fallbacks. The
+bundled stress trace is explicitly non-hardware evidence; provide measured QPU
+timestamps with `--latency-trace` to evaluate the physical-latency gate.
+
+Run the fixed-K scale-aware and stable-backlog extension:
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\stable_backlog_scaling.py
+```
+
+This experiment retrains the actor on 20--100 decision environments, selects a
+standardized utility-to-detuning map on disjoint seeds, and confirms it at
+`K=16`. It then sends only a bounded, long-lived target block to the delayed
+sampler while beam search handles the immediate lane. An identically delayed
+beam planner controls for the benefit of backlog partitioning.
+
 ## Documentation
 
 - [Architecture and extension guide](docs/architecture.md)
@@ -114,6 +142,8 @@ quantum-backend evidence.
 - [Experiment and reporting protocol](docs/research_protocol.md)
 - [Dynamic dispatch benchmark](docs/dispatch_benchmark.md)
 - [Conditional quantum-assisted advantage study](docs/conditional_advantage_study.md)
+- [Latency-aware dynamic dispatch extension](docs/latency_aware_dispatch.md)
+- [Scale-aware stable-backlog study](docs/stable_backlog_scaling.md)
 - [Migration from the former template layout](docs/migration.md)
 
 The editable diagrams remain in the repository-level `figures/` directory, and

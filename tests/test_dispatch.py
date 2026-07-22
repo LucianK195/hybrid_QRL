@@ -36,6 +36,7 @@ class DispatchBenchmarkTests(unittest.TestCase):
         )
         state = environment.state()
         self.assertEqual(state.node_features.shape, (20, 6))
+        self.assertEqual(len(np.unique(state.job_ids)), 20)
         self.assertEqual(len(state.graph.edges), round(0.15 * 20 * 19 / 2))
         empty = tuple(0 for _ in range(20))
         next_state, reward, done, info = environment.step(empty)
@@ -43,6 +44,20 @@ class DispatchBenchmarkTests(unittest.TestCase):
         self.assertFalse(done)
         self.assertTrue(np.isfinite(reward))
         self.assertEqual(info["selected"], 0)
+        np.testing.assert_array_equal(next_state.job_ids, state.job_ids)
+
+    def test_completed_slots_receive_new_job_identities(self) -> None:
+        environment = DispatchEnvironment(
+            DispatchConfig(n_jobs=8, density=0.12, horizon=2),
+            seed=14,
+        )
+        state = environment.state()
+        selected = [0] * 8
+        selected[0] = 1
+        next_state, _, _, _ = environment.step(tuple(selected))
+
+        self.assertNotEqual(next_state.job_ids[0], state.job_ids[0])
+        np.testing.assert_array_equal(next_state.job_ids[1:], state.job_ids[1:])
 
     def test_small_calibration_scale_and_clustered_graph(self) -> None:
         state = DispatchEnvironment(

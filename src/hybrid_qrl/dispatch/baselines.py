@@ -40,7 +40,16 @@ METHODS = (
 
 @dataclass(frozen=True)
 class ProposalConfig:
-    """Shared proposal budget and physical-surrogate controls."""
+    """Shared proposal budget and physical-surrogate controls.
+
+    ``utility_encoding`` controls only the scalable classical Rydberg
+    surrogate. ``mean`` preserves the original mean-normalized detuning map.
+    ``standardized`` exponentiates centered utilities before restoring unit
+    mean. The latter keeps local-detuning contrast stable when graph size and
+    the utility distribution change. It is a surrogate hypothesis that must
+    be recalibrated against dense, QuTiP, or hardware distributions before it
+    supports a physical claim.
+    """
 
     candidates: int = 16
     latency_ms: float | None = None
@@ -51,6 +60,8 @@ class ProposalConfig:
     pulse_schedule: str = "balanced"
     cache_precision: int | None = 2
     beam_width: int = 32
+    utility_encoding: str = "mean"
+    detuning_gain: float = 0.5
 
     def __post_init__(self) -> None:
         if self.candidates <= 0:
@@ -65,10 +76,19 @@ class ProposalConfig:
             raise ValueError("blockade_radius_scale must be positive")
         if not 0 <= self.readout_noise <= 1:
             raise ValueError("readout_noise must be in [0, 1]")
-        if self.pulse_schedule not in {"short", "balanced", "adiabatic"}:
+        if self.pulse_schedule not in {
+            "short",
+            "balanced",
+            "adiabatic",
+            "extended",
+        }:
             raise ValueError("unknown pulse schedule")
         if self.cache_precision is not None and self.cache_precision < 0:
             raise ValueError("cache_precision must be non-negative or None")
+        if self.utility_encoding not in {"mean", "standardized"}:
+            raise ValueError("utility_encoding must be mean or standardized")
+        if self.detuning_gain <= 0:
+            raise ValueError("detuning_gain must be positive")
 
 
 @dataclass(frozen=True)
@@ -396,18 +416,33 @@ def _rydberg_surrogate_candidates(
         if config.cache_precision is None
         else np.round(weights, decimals=config.cache_precision)
     )
-    normalized = cached / (float(np.mean(cached)) + 1e-9)
-    sweep_count, beta_max = {
-        "short": (2, 2.0),
-        "balanced": (6, 5.0),
-        "adiabatic": (12, 8.0),
+    if config.utility_encoding == "mean":
+        normalized = cached / (float(np.mean(cached)) + 1e-9)
+    else:
+        deviation = float(np.std(cached))
+        if deviation <= 1e-9:
+            normalized = np.ones_like(cached)
+        else:
+            standardized = (cached - float(np.mean(cached))) / deviation
+            encoded = np.exp(
+                np.clip(config.detuning_gain * standardized, -6.0, 6.0)
+            )
+            normalized = encoded / (float(np.mean(encoded)) + 1e-9)
+    sweep_count, beta_max, detuning_start, detuning_end = {
+        "short": (2, 2.0, 1.15, 0.50),
+        "balanced": (6, 5.0, 1.15, 0.50),
+        "adiabatic": (12, 8.0, 1.15, 0.50),
+        "extended": (16, 10.0, 1.30, 0.60),
     }[config.pulse_schedule]
     output: list[Action] = []
     while len(output) < target and perf_counter() < deadline:
         selected: set[int] = set()
         for sweep in range(sweep_count):
             beta = beta_max * (sweep + 1) / sweep_count
-            detuning = 1.15 - 0.65 * (sweep + 1) / sweep_count
+            progress = (sweep + 1) / sweep_count
+            detuning = detuning_start + (
+                detuning_end - detuning_start
+            ) * progress
             for raw_node in rng.permutation(state.n_jobs):
                 node = int(raw_node)
                 if selected & adjacency[node]:

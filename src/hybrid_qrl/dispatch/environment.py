@@ -83,6 +83,7 @@ class DispatchState:
     deadlines: np.ndarray
     remaining: np.ndarray
     node_features: np.ndarray
+    job_ids: np.ndarray
     step_index: int
 
     @property
@@ -136,6 +137,84 @@ def perturbed_physical_graph(
     return graph_from_positions(noisy, state.blockade_radius * radius_scale)
 
 
+def induced_dispatch_state(
+    state: DispatchState,
+    nodes: np.ndarray,
+    *,
+    future_steps: int = 0,
+) -> DispatchState:
+    """Project selected persistent jobs into an induced future subproblem.
+
+    The helper is used by asynchronous planners that reserve a stable backlog
+    while a remote candidate batch is pending. It assumes the selected jobs
+    are not executed or replaced during ``future_steps``. Pairwise edges are
+    induced from the authoritative application graph and node features are
+    recomputed at the projected arrival time.
+
+    Parameters
+    ----------
+    state:
+        Current immutable environment snapshot.
+    nodes:
+        One-dimensional array of distinct current slot indices.
+    future_steps:
+        Number of environment steps by which age and remaining lifetime are
+        advanced. Callers must select jobs that survive this interval.
+    """
+
+    selected = np.asarray(nodes, dtype=int)
+    if selected.ndim != 1 or len(selected) == 0:
+        raise ValueError("nodes must be a non-empty one-dimensional array")
+    if len(np.unique(selected)) != len(selected):
+        raise ValueError("nodes must not contain duplicates")
+    if np.any(selected < 0) or np.any(selected >= state.n_jobs):
+        raise ValueError("nodes contains an index outside the state")
+    if future_steps < 0:
+        raise ValueError("future_steps must be non-negative")
+    if np.any(state.remaining[selected] <= future_steps):
+        raise ValueError("projected jobs must survive future_steps")
+
+    remap = {int(old): new for new, old in enumerate(selected)}
+    edges = tuple(
+        (remap[left], remap[right])
+        for left, right in state.graph.edges
+        if left in remap and right in remap
+    )
+    graph = ConflictGraph(
+        nodes=len(selected),
+        edges=edges,
+        max_selected=min(int(state.graph.max_selected), len(selected)),
+    )
+    values = state.values[selected].copy()
+    ages = state.ages[selected].copy() + future_steps
+    deadlines = state.deadlines[selected].copy()
+    remaining = state.remaining[selected].copy() - future_steps
+    degree = np.asarray([len(items) for items in graph.adjacency()], dtype=float)
+    urgency = 1.0 / np.maximum(remaining, 1)
+    features = np.column_stack(
+        (
+            values,
+            ages / max(float(np.max(deadlines)), 1.0),
+            urgency,
+            values * urgency,
+            degree / max(graph.nodes - 1, 1),
+            np.ones(graph.nodes),
+        )
+    )
+    return DispatchState(
+        graph=graph,
+        positions=state.positions[selected].copy(),
+        blockade_radius=state.blockade_radius,
+        values=values,
+        ages=ages,
+        deadlines=deadlines,
+        remaining=remaining,
+        node_features=features,
+        job_ids=state.job_ids[selected].copy(),
+        step_index=state.step_index + future_steps,
+    )
+
+
 class DispatchEnvironment:
     """Continuing weighted-job dispatch process with deadline pressure."""
 
@@ -147,6 +226,8 @@ class DispatchEnvironment:
         self._ages = np.zeros(config.n_jobs, dtype=int)
         self._deadlines = np.empty(config.n_jobs, dtype=int)
         self._remaining = np.empty(config.n_jobs, dtype=int)
+        self._job_ids = np.empty(config.n_jobs, dtype=np.int64)
+        self._next_job_id = 0
         self._step = 0
         self.reset()
 
@@ -230,11 +311,18 @@ class DispatchEnvironment:
             size=count,
         )
         self._remaining[mask] = self._deadlines[mask]
+        self._job_ids[mask] = np.arange(
+            self._next_job_id,
+            self._next_job_id + count,
+            dtype=np.int64,
+        )
+        self._next_job_id += count
 
     def reset(self) -> DispatchState:
         """Replace every job and return the initial state."""
 
         self._step = 0
+        self._next_job_id = 0
         self._replace_jobs(np.ones(self.config.n_jobs, dtype=bool))
         return self.state()
 
@@ -264,6 +352,7 @@ class DispatchEnvironment:
             deadlines=self._deadlines.copy(),
             remaining=self._remaining.copy(),
             node_features=features,
+            job_ids=self._job_ids.copy(),
             step_index=self._step,
         )
 

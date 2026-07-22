@@ -18,6 +18,9 @@ Run scripts from the repository root after installing `hybrid_qrl` in editable
 mode. Their default datasets and reports are written to the repository-level
 `results/` directory.
 
+`stable_backlog_scaling.py` is the fixed-K size-aware detuning confirmation and
+delayed stable-backlog study. It includes an identically delayed beam control.
+
 Run the complete multi-seed CartPole study with:
 
 ```powershell
@@ -92,3 +95,39 @@ $env:PYTHONPATH = ".\hybrid_qrl\src"
 .\.venv\Scripts\python.exe `
   .\hybrid_qrl\experiments\plot_dispatch_benchmark.py
 ```
+
+## Latency-aware dispatch
+
+`latency_aware_dispatch.py` assigns physical duration to each synthetic
+environment step, replays a timestamped latency distribution, tracks persistent
+job identities, repairs stale actions, and compares blocking quantum execution
+with asynchronous beam/greedy fallback. It retains all conditional-advantage
+gates and adds measured-QPU, deadline, safety, return, and utilization gates.
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\latency_aware_dispatch.py
+```
+
+The default deterministic stress trace validates the architecture but is not
+hardware evidence. Supply `--latency-trace` with timestamped observations whose
+source kind is `measured_qpu` for the physical-latency gate.
+
+## Scale-aware stable backlog
+
+Run the scaling and future-batch study with:
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\stable_backlog_scaling.py
+```
+
+The default protocol holds `K=16`, uses separate selection and confirmation
+seeds, and compares the frozen legacy sampler, multi-size reward training,
+scale-aware detuning, and beam search. The future-batch section reserves only
+the highest-priority 25% of stable jobs, capped at 20, while beam handles the
+unreserved immediate lane. Results are written to
+`results/stable_backlog_scaling_results.json` and
+`results/stable_backlog_scaling_report.md`.

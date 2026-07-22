@@ -85,8 +85,14 @@ The primary scale study evaluates `n = 20, 40, 60, 100` at target edge density
 0.12 in two modes:
 
 - equal K: at most 16 raw proposals per method; and
-- equal latency: 20 ms end-to-end target, with generation capped at 10 ms and
-  96 retained raw proposals so repair and Q reranking remain inside the target.
+- equal local latency: 20 ms software-pipeline target, with generation capped
+  at 10 ms and 96 retained raw proposals so repair and Q reranking remain
+  inside the target.
+
+This target covers local proposal generation, repair, deduplication, learned-Q
+reranking, and Python overhead. It is not a neutral-atom QPU deadline and does
+not include cloud submission, queueing, atom preparation, physical shots,
+measurement, or result retrieval.
 
 The dynamic evaluation runs 12 dispatch steps for every method and seed. A
 one-factor-at-a-time robustness study varies:
@@ -140,7 +146,15 @@ Outputs:
   capacities require cumulative constraints in an extended safety layer.
 - Python CPU wall time is suitable for within-machine comparisons, not neutral
   atom hardware latency claims.
+- Environment steps have no assigned physical duration, and recorded actions
+  are executed immediately. Hardware-latency claims require a configured
+  decision interval plus delayed-action/stale-state evaluation.
 - The action critic is linear and may mis-rank candidates under distribution
   shift; this is part of the measured end-to-end method, not an oracle critic.
 - Hardware validation still requires mapping pulse schedules and geometry to
   the downloaded neutral-atom backend on small calibratable instances.
+
+The follow-up implementation in `docs/latency_aware_dispatch.md` assigns a
+physical duration to each step, consumes timestamped task-latency traces, and
+evaluates delayed execution plus asynchronous classical fallback without
+changing the original benchmark records.
