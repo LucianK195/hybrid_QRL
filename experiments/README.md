@@ -131,3 +131,22 @@ the highest-priority 25% of stable jobs, capped at 20, while beam handles the
 unreserved immediate lane. Results are written to
 `results/stable_backlog_scaling_results.json` and
 `results/stable_backlog_scaling_report.md`.
+
+## Generalization and candidate-budget stress test
+
+`dispatch_generalization_stress.py` freezes the trained model and selected
+scale-aware sampler, then varies job count, `K`, conflict density, deadline
+pressure, graph family, utility distribution, and utility correlation on new
+paired held-out seeds. Beam search receives the same candidate count and every
+state is normalized by its own MILP reward reference.
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\dispatch_generalization_stress.py --seeds 20
+```
+
+The preregistered matrix is documented in
+`docs/generalization_stress_test_plan.md`. Raw records are written to
+`results/dispatch_generalization_stress.json`, with aggregate results in
+`results/dispatch_generalization_stress.md`.

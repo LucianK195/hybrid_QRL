@@ -14,6 +14,10 @@ from .environment import (
     DispatchState,
     induced_dispatch_state,
 )
+from .generalization_benchmark import (
+    GeneralizationBenchmarkConfig,
+    run_generalization_benchmark,
+)
 from .latency_benchmark import (
     LatencyAwareConfig,
     LatencyTrace,
@@ -29,6 +33,7 @@ __all__ = [
     "DispatchConfig",
     "DispatchEnvironment",
     "DispatchState",
+    "GeneralizationBenchmarkConfig",
     "LatencyAwareConfig",
     "LatencyTrace",
     "SamplerLoopTrainingConfig",
@@ -36,6 +41,7 @@ __all__ = [
     "export_test_dataset",
     "induced_dispatch_state",
     "run_backlog_benchmark",
+    "run_generalization_benchmark",
     "run_latency_aware_benchmark",
     "train_actor_critic",
     "train_sampler_in_loop",
