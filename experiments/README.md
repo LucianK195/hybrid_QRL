@@ -167,3 +167,21 @@ $env:PYTHONPATH = ".\hybrid_qrl\src"
 
 The protocol and offline-lifetime limitation are documented in
 `docs/azure_packing_benchmark.md`.
+
+## Azure bundle-conflict benchmark
+
+`azure_bundle_benchmark.py` converts the same official trace into a
+configuration/set-packing problem. Each binary node is a complete
+capacity-feasible `(machine, bundle)` assignment, and graph edges exactly
+represent same-machine or shared-request conflicts. The report separates
+sampler quality inside the generated library from library coverage against a
+direct request-by-machine MILP.
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\azure_bundle_benchmark.py
+```
+
+The formulation, references, and preregistered gates are documented in
+`docs/azure_bundle_benchmark.md`.
