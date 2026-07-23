@@ -8,6 +8,7 @@ baselines, and a classical surrogate for Rydberg-blockade proposal dynamics.
 
 from .dataset import DatasetExportSummary, export_test_dataset
 from .backlog_benchmark import BacklogBenchmarkConfig, run_backlog_benchmark
+from .azure_packing import AzurePackingConfig, run_azure_packing_benchmark
 from .environment import (
     DispatchConfig,
     DispatchEnvironment,
@@ -29,6 +30,7 @@ from .sampler_loop import SamplerLoopTrainingConfig, train_sampler_in_loop
 __all__ = [
     "ActorCriticModel",
     "BacklogBenchmarkConfig",
+    "AzurePackingConfig",
     "DatasetExportSummary",
     "DispatchConfig",
     "DispatchEnvironment",
@@ -41,6 +43,7 @@ __all__ = [
     "export_test_dataset",
     "induced_dispatch_state",
     "run_backlog_benchmark",
+    "run_azure_packing_benchmark",
     "run_generalization_benchmark",
     "run_latency_aware_benchmark",
     "train_actor_critic",

@@ -150,3 +150,20 @@ The preregistered matrix is documented in
 `docs/generalization_stress_test_plan.md`. Raw records are written to
 `results/dispatch_generalization_stress.json`, with aggregate results in
 `results/dispatch_generalization_stress.md`.
+
+## Azure Packing 2020 trace benchmark
+
+`azure_packing_benchmark.py` evaluates chronological VM-request windows from
+the official Microsoft Azure Packing trace. It adds authoritative cumulative
+CPU, memory, SSD, and NIC constraints, mandatory repair, a reward-trained
+trace utility head and critic, capacity-aware baselines, and a zero-gap MILP
+reference.
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\azure_packing_benchmark.py
+```
+
+The protocol and offline-lifetime limitation are documented in
+`docs/azure_packing_benchmark.md`.
