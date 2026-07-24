@@ -25,6 +25,9 @@ from typing import Any, Iterable
 import numpy as np
 
 from ..core import Action
+from ..utilities.metrics import shots_for_95_percent
+from ..utilities.reports.latency import render_latency_report
+from ..utilities.results import ResultWriter
 from .baselines import (
     ProposalConfig,
     generate_candidates,
@@ -33,7 +36,6 @@ from .baselines import (
     solve_weighted_independent_set,
 )
 from .benchmark import oracle_weights, realized_step_reward
-from .conditional_benchmark import shots_for_95_percent
 from .environment import DispatchConfig, DispatchEnvironment, DispatchState
 from .learning import ActorCriticModel
 
@@ -806,285 +808,6 @@ def build_latency_gate(
     }
 
 
-def _fmt(value: float, ci: float | None = None, digits: int = 3) -> str:
-    if ci is None:
-        return f"{value:.{digits}f}"
-    return f"{value:.{digits}f} +/- {ci:.{digits}f}"
-
-
-def _table(headers: list[str], rows: list[list[str]]) -> str:
-    lines = [
-        "| " + " | ".join(headers) + " |",
-        "|" + "|".join("---" for _ in headers) + "|",
-    ]
-    lines.extend("| " + " | ".join(row) + " |" for row in rows)
-    return "\n".join(lines)
-
-
-def build_latency_report(results: dict[str, Any]) -> str:
-    """Render the latency-aware study, metrics, and combined gate decision."""
-
-    config = results["config"]
-    latency = results["latency_summary"]
-    summary = results["policy_summary"]
-    gate = results["gate"]
-    status = "PASS" if gate["pass"] else "HOLD -- NOT ESTABLISHED"
-    policy_rows = []
-    for row in summary:
-        uses_quantum = row["policy"] not in {
-            "beam_immediate",
-            "greedy_immediate",
-        }
-        policy_rows.append(
-            [
-                row["policy"],
-                _fmt(row["episode_return_mean"], row["episode_return_ci95"]),
-                _fmt(row["reward_ratio_mean"], row["reward_ratio_ci95"]),
-                _fmt(row["missed_value_mean"], row["missed_value_ci95"]),
-                _fmt(
-                    row["overall_epsilon_hit_rate_mean"],
-                    row["overall_epsilon_hit_rate_ci95"],
-                ),
-                (
-                    _fmt(
-                        row["quantum_batch_epsilon_coverage_mean"],
-                        row["quantum_batch_epsilon_coverage_ci95"],
-                    )
-                    if uses_quantum
-                    else "n/a"
-                ),
-                (
-                    str(
-                        shots_for_95_percent(
-                            row["quantum_candidate_p_epsilon_mean"]
-                        )
-                    )
-                    if uses_quantum
-                    else "n/a"
-                ),
-                (
-                    f"{row['deadline_misses_sum']:.0f}/"
-                    f"{row['requests_issued_sum']:.0f} "
-                    f"({row['deadline_miss_rate_mean']:.1%})"
-                    if uses_quantum
-                    else "n/a"
-                ),
-                (
-                    _fmt(
-                        row["quantum_result_utilization_mean"],
-                        row["quantum_result_utilization_ci95"],
-                    )
-                    if uses_quantum
-                    else "n/a"
-                ),
-            ]
-        )
-    feasibility_rows = []
-    for row in summary:
-        uses_quantum = row["policy"] not in {
-            "beam_immediate",
-            "greedy_immediate",
-        }
-        feasibility_rows.append(
-            [
-                row["policy"],
-                (
-                    _fmt(row["generation_raw_feasible_rate_mean"])
-                    if uses_quantum
-                    else "n/a"
-                ),
-                (
-                    _fmt(row["stale_raw_feasible_rate_mean"])
-                    if uses_quantum
-                    else "n/a"
-                ),
-                (
-                    _fmt(row["post_repair_feasible_rate_mean"])
-                    if uses_quantum
-                    else "n/a"
-                ),
-                (
-                    _fmt(row["repair_change_rate_mean"])
-                    if uses_quantum
-                    else "n/a"
-                ),
-                (
-                    _fmt(row["selected_identity_survival_rate_mean"])
-                    if uses_quantum
-                    else "n/a"
-                ),
-                (
-                    _fmt(row["mean_staleness_steps_mean"], digits=2)
-                    if uses_quantum
-                    else "n/a"
-                ),
-                _fmt(row["shots_total_sum"], digits=0) if uses_quantum else "0",
-            ]
-        )
-    retained = gate["retained_conditional_gates"]
-    latency_gates = gate["latency_aware_gates"]
-    lines = [
-        "# Latency-aware dynamic dispatch extension",
-        "",
-        "## Claim boundary",
-        "",
-        "This extension assigns physical time to an environment step and evaluates "
-        "delayed and asynchronous control. Quantum candidate content is still "
-        "generated by the calibrated classical surrogate. A physical-latency claim "
-        "is permitted only when the input trace contains measured QPU timestamps.",
-        "",
-        f"**Combined gate status: {status}.**",
-        "",
-        "## Preregistered timing protocol",
-        "",
-        _table(
-            ["setting", "value"],
-            [
-                ["physical duration per step", f"{config['decision_step_ms']:.0f} ms"],
-                ["quantum result deadline", f"{config['quantum_deadline_ms']:.0f} ms"],
-                ["episode horizon", f"{config['horizon']} steps"],
-                ["decisions", str(config["n_jobs"])],
-                ["candidate budget", str(config["candidate_budget"])],
-                ["held-out seeds", str(config["seeds"])],
-                ["deadline gate", f">= {config['minimum_deadline_compliance']:.0%}"],
-                ["reward-ratio gate", f">= {config['minimum_reward_ratio']:.2f}"],
-            ],
-        ),
-        "",
-        "## Latency distribution",
-        "",
-        f"Source: `{latency['source_kind']}` / `{latency['source_name']}`; device: "
-        f"`{latency['device']}`. Measured-QPU evidence: "
-        f"**{latency['measured_qpu']}**.",
-        f"Trace SHA-256: `{latency['trace_sha256']}`.",
-        "",
-        _table(
-            ["component", "mean ms", "p95 ms", "p99 ms"],
-            [
-                [
-                    "submission-to-retrieval",
-                    _fmt(latency["total_mean_ms"], digits=1),
-                    _fmt(latency["total_p95_ms"], digits=1),
-                    _fmt(latency["total_p99_ms"], digits=1),
-                ],
-                [
-                    "queue",
-                    _fmt(latency["queue_mean_ms"], digits=1),
-                    _fmt(latency["queue_p95_ms"], digits=1),
-                    _fmt(latency["queue_p99_ms"], digits=1),
-                ],
-                [
-                    "provider execution",
-                    _fmt(latency["execution_mean_ms"], digits=1),
-                    _fmt(latency["execution_p95_ms"], digits=1),
-                    _fmt(latency["execution_p99_ms"], digits=1),
-                ],
-                [
-                    "retrieval",
-                    _fmt(latency["retrieval_mean_ms"], digits=1),
-                    _fmt(latency["retrieval_p95_ms"], digits=1),
-                    _fmt(latency["retrieval_p99_ms"], digits=1),
-                ],
-            ],
-        ),
-        "",
-        f"Deadline compliance was {latency['deadline_compliance']:.1%} "
-        f"({latency['deadline_misses']} misses in "
-        f"{latency['observations']} observations). The trace represents "
-        f"{latency['shots_total']} shots in total, with "
-        f"{latency['shots_mean']:.1f} shots per request.",
-        "",
-        "## Delayed and asynchronous rollout results",
-        "",
-        _table(
-            [
-                "policy",
-                "episode return",
-                "reward/ref.",
-                "missed value",
-                "selected eps-5%",
-                "quantum batch eps-5%",
-                "K95",
-                "deadline misses",
-                "quantum utilization",
-            ],
-            policy_rows,
-        ),
-        "",
-        "`quantum_delayed` waits with a no-op until a non-expired result arrives. "
-        "The asynchronous policies execute beam or greedy immediately and use an "
-        "arrived quantum candidate only when the current critic ranks it above the "
-        "fallback.",
-        "",
-        "## Feasibility, repair, staleness, and shots",
-        "",
-        _table(
-            [
-                "policy",
-                "generation raw",
-                "stale raw",
-                "post-repair",
-                "repair changed",
-                "ID survival",
-                "stale steps",
-                "shots",
-            ],
-            feasibility_rows,
-        ),
-        "",
-        "Candidates are keyed by persistent job IDs. Jobs replaced before result "
-        "arrival are dropped, after which mandatory application-graph repair runs "
-        "against the current state.",
-        "",
-        "## Retained conditional-advantage gates",
-        "",
-        _table(
-            ["gate", "pass", "evidence"],
-            [
-                [
-                    "reward ratio",
-                    str(retained["reward_ratio_pass"]),
-                    "unchanged conditional-study acceptable-return gate",
-                ],
-                [
-                    "epsilon coverage",
-                    str(retained["epsilon_coverage_pass"]),
-                    "unchanged beam-comparison coverage gate",
-                ],
-                [
-                    "calibration transfer",
-                    str(retained["calibration_transfer_pass"]),
-                    f"surrogate TV = {gate['evidence']['surrogate_mean_tv']:.3f}",
-                ],
-                [
-                    "manual backend",
-                    str(retained["manual_backend_pass"]),
-                    "manual critic ratio = "
-                    f"{gate['evidence']['manual_mean_critic_ratio']:.3f}",
-                ],
-            ],
-        ),
-        "",
-        "## New physical-latency gates",
-        "",
-        _table(
-            ["gate", "pass"],
-            [[name, str(value)] for name, value in latency_gates.items()],
-        ),
-        "",
-        "## Conclusion",
-        "",
-        "The delayed-action and asynchronous software paths are now implemented "
-        "and auditable. This run cannot establish physical advantage when the "
-        "latency source is synthetic, and the prior epsilon-coverage, transfer, and "
-        "manual-backend gates remain failed. Replace the stress trace with measured "
-        "timestamped QPU tasks and rerun the unchanged protocol; do not retune "
-        "thresholds on the held-out results.",
-        "",
-    ]
-    return "\n".join(lines)
-
-
 def run_latency_aware_benchmark(
     *,
     model: ActorCriticModel,
@@ -1145,8 +868,10 @@ def run_latency_aware_benchmark(
         "retained_conditional_gate": conditional_gate,
         "gate": gate,
     }
-    output_json.parent.mkdir(parents=True, exist_ok=True)
-    output_report.parent.mkdir(parents=True, exist_ok=True)
-    output_json.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
-    output_report.write_text(build_latency_report(results), encoding="utf-8")
+    ResultWriter().artifacts(
+        json_path=output_json,
+        report_path=output_report,
+        payload=results,
+        render_report=render_latency_report,
+    )
     return results

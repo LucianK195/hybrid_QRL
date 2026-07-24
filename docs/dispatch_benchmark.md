@@ -128,7 +128,7 @@ From the repository root:
 ```powershell
 $env:PYTHONPATH = ".\hybrid_qrl\src"
 .\.venv\Scripts\python.exe `
-  .\hybrid_qrl\experiments\dispatch_scaling_benchmark.py `
+  .\hybrid_qrl\experiments\dispatch.py scaling `
   --seeds 20 --train-episodes 320 --k 16 --latency-ms 20
 ```
 

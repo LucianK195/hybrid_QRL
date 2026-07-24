@@ -24,6 +24,10 @@ encoder, utility head, and critic.
 | `src/hybrid_qrl/classical.py` | Identity encoder, fixed utilities, greedy baseline | Yes |
 | `src/hybrid_qrl/quantum.py` | QPU integration skeleton and Rydberg adapters | Yes |
 | `src/hybrid_qrl/pipeline.py` | Safety filtering, fallback, and critic reranking | Extend |
+| `src/hybrid_qrl/applications/` | OOP orchestration for the four dataset entry points | Extend |
+| `src/hybrid_qrl/utilities/` | Shared result serialization, metrics, paths, and plots | Usually no |
+| `src/hybrid_qrl/utilities/reports/` | Dataset-specific Markdown renderers | Usually no |
+| `experiments/` | Four thin dataset entry points; no reusable implementation | Usually no |
 | `examples/toy_constrained_action.py` | Runnable six-decision tutorial | Use as wiring reference |
 | `tests/test_pipeline.py` | Contract and safety tests | Extend |
 
@@ -158,7 +162,7 @@ Run it on the six-node example:
 Or select it in the CartPole integration test:
 
 ```powershell
-.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole_benchmark.py `
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole.py benchmark `
   --quantum-backend qutip `
   --candidates 8
 ```
@@ -238,7 +242,7 @@ enough that K and total latency do not grow exponentially.
 
 ## CartPole integration test
 
-`cartpole_benchmark.py` contains a dependency-free implementation of the
+`hybrid_qrl.cartpole.benchmark` contains a dependency-free implementation of the
 standard CartPole-v1 dynamics. It generates an offline trajectory dataset,
 fits a basic linear policy, and evaluates common action selectors on identical
 environment seeds:
@@ -264,7 +268,7 @@ not the large-action-space hypothesis.
 Run the primary K=8 comparison:
 
 ```powershell
-.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole_benchmark.py `
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole.py benchmark `
   --training-episodes 64 `
   --evaluation-episodes 30 `
   --candidates 8 `
@@ -274,7 +278,7 @@ Run the primary K=8 comparison:
 Run the candidate-budget sweep:
 
 ```powershell
-.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole_budget_sweep.py `
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole.py budget-sweep `
   --budgets 1 2 4 8 `
   --training-episodes 64 `
   --evaluation-episodes 30 `

@@ -7,7 +7,6 @@ per-seed JSON rather than transcribing report tables and writes editable SVGs.
 
 from __future__ import annotations
 
-import argparse
 from collections import defaultdict
 from html import escape
 import json
@@ -17,7 +16,6 @@ from statistics import mean, stdev
 from typing import Any, Callable, Iterable
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 METHODS = (
     "beam_search",
     "local_search",
@@ -491,36 +489,17 @@ def graph_gallery(records: list[dict[str, Any]]) -> str:
     return _svg("Held-out dispatch graph examples", 1020, 380, "\n".join(parts))
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse benchmark, dataset, and output paths."""
+def write_dispatch_figures(
+    results_path: Path,
+    dataset_path: Path,
+    output_dir: Path,
+) -> tuple[Path, ...]:
+    """Aggregate raw records and write the complete editable figure set."""
 
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--results",
-        type=Path,
-        default=PROJECT_ROOT / "results" / "dispatch_benchmark_results.json",
-    )
-    parser.add_argument(
-        "--dataset",
-        type=Path,
-        default=PROJECT_ROOT / "datasets" / "dispatch_test_v1.jsonl",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=PROJECT_ROOT / "figures" / "dispatch_benchmark",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    """Aggregate raw trials and write the benchmark figure set."""
-
-    args = parse_args()
-    results = json.loads(args.results.read_text(encoding="utf-8"))
+    results = json.loads(results_path.read_text(encoding="utf-8"))
     graph_records = [
         json.loads(line)
-        for line in args.dataset.read_text(encoding="utf-8").splitlines()
+        for line in dataset_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     figures = {
@@ -530,12 +509,10 @@ def main() -> None:
         "04_rydberg_robustness.svg": robustness_figure(results),
         "05_test_graph_examples.svg": graph_gallery(graph_records),
     }
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_paths = []
     for filename, content in figures.items():
-        path = args.output_dir / filename
+        path = output_dir / filename
         path.write_text(content, encoding="utf-8")
-        print(path)
-
-
-if __name__ == "__main__":
-    main()
+        output_paths.append(path)
+    return tuple(output_paths)

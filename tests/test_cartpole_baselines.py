@@ -1,17 +1,10 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-
-EXPERIMENTS = Path(__file__).resolve().parents[1] / "experiments"
-if str(EXPERIMENTS) not in sys.path:
-    sys.path.insert(0, str(EXPERIMENTS))
-
-from cartpole_benchmark import (  # noqa: E402
+from hybrid_qrl.cartpole import (
     EpsilonGreedyPolicy,
     LinearPolicy,
     SampledUtilityPolicy,

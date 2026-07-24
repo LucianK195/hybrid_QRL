@@ -158,7 +158,7 @@ From the workspace root:
 ```powershell
 $env:PYTHONPATH = ".\hybrid_qrl\src"
 .\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\conditional_advantage_study.py `
+  .\hybrid_qrl\experiments\dispatch.py conditional `
   --seeds 20 `
   --training-iterations 140 `
   --calibration-seeds 20 `

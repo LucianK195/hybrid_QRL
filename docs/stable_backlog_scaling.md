@@ -13,7 +13,7 @@ It tests a size-stable utility encoding at the unchanged candidate budget
 `K=16`, then moves delayed proposals onto a reserved, long-lived backlog. The
 study is implemented in
 `src/hybrid_qrl/dispatch/backlog_benchmark.py` and executed by
-`experiments/stable_backlog_scaling.py`.
+`experiments/dispatch.py backlog`.
 
 ## Claim boundary
 
@@ -122,13 +122,13 @@ QPU trace, and the retained calibration-transfer gates.
 From the repository root:
 
 ```powershell
-python experiments/stable_backlog_scaling.py
+python experiments/dispatch.py backlog
 ```
 
 To use timestamped hardware observations:
 
 ```powershell
-python experiments/stable_backlog_scaling.py `
+python experiments/dispatch.py backlog `
   --latency-trace path\to\measured_qpu_latency.json
 ```
 

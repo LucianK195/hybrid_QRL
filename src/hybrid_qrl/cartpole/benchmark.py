@@ -12,8 +12,6 @@ than quantum scaling or advantage.
 
 from __future__ import annotations
 
-import argparse
-import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -21,10 +19,10 @@ from typing import Callable
 
 import numpy as np
 
-from hybrid_qrl.classical import IdentityEncoder, RandomizedWeightedGreedy
-from hybrid_qrl.core import ConflictGraph
-from hybrid_qrl.pipeline import HybridActionHead, UtilityCritic
-from hybrid_qrl.quantum import (
+from ..classical import IdentityEncoder, RandomizedWeightedGreedy
+from ..core import ConflictGraph
+from ..pipeline import HybridActionHead, UtilityCritic
+from ..quantum import (
     DenseRydbergStatevectorSampler,
     ManualNeutralAtomBackendSampler,
     QuTiPRydbergSampler,
@@ -545,68 +543,3 @@ def run_benchmark(
             "hybrid_rydberg_candidates": quantum_result,
         },
     }
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--training-episodes", type=int, default=64)
-    parser.add_argument("--evaluation-episodes", type=int, default=30)
-    parser.add_argument("--candidates", type=int, default=8)
-    parser.add_argument("--seed", type=int, default=17)
-    parser.add_argument("--epsilon", type=float, default=0.05)
-    parser.add_argument("--softmax-temperature", type=float, default=0.25)
-    parser.add_argument(
-        "--quantum-backend",
-        choices=("dense", "qutip", "manual"),
-        default="dense",
-    )
-    parser.add_argument(
-        "--dataset-output",
-        type=Path,
-        default=Path("results/cartpole_offline_dataset.npz"),
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("results/cartpole_hybrid_comparison.json"),
-    )
-    args = parser.parse_args()
-    if args.training_episodes <= 0 or args.evaluation_episodes <= 0:
-        parser.error("episode counts must be positive")
-    if args.candidates <= 0:
-        parser.error("--candidates must be positive")
-    if not 0.0 <= args.epsilon <= 1.0:
-        parser.error("--epsilon must be between zero and one")
-    if args.softmax_temperature <= 0.0:
-        parser.error("--softmax-temperature must be positive")
-
-    report = run_benchmark(
-        args.training_episodes,
-        args.evaluation_episodes,
-        args.candidates,
-        args.seed,
-        args.dataset_output,
-        args.quantum_backend,
-        args.epsilon,
-        args.softmax_temperature,
-    )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    compact = {
-        "dataset": report["dataset"],
-        "evaluation": {
-            name: {
-                "mean_return": metrics["mean_return"],
-                "std_return": metrics["std_return"],
-                "solved_rate": metrics["solved_rate_return_at_least_475"],
-            }
-            for name, metrics in report["evaluation"].items()
-        },
-        "output": str(args.output),
-        "dataset_output": str(args.dataset_output),
-    }
-    print(json.dumps(compact, indent=2))
-
-
-if __name__ == "__main__":
-    main()

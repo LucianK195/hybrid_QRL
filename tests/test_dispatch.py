@@ -19,7 +19,7 @@ from hybrid_qrl.dispatch.baselines import (
     proposal_weights,
     solve_weighted_independent_set,
 )
-from hybrid_qrl.dispatch.conditional_benchmark import shots_for_95_percent
+from hybrid_qrl.utilities.metrics import shots_for_95_percent
 from hybrid_qrl.dispatch.sampler_loop import (
     SamplerLoopTrainingConfig,
     train_sampler_in_loop,

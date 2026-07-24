@@ -30,9 +30,12 @@ hybrid_qrl/
 └── README.md
 ```
 
-Only reusable implementation belongs under `src/hybrid_qrl`. Examples should
-demonstrate one concept with small inputs. Experiments may generate datasets
-and reports but must write them outside the package source tree.
+Only reusable implementation belongs under `src/hybrid_qrl`. The four dataset
+entry points under `experiments` delegate to OOP command objects in
+`src/hybrid_qrl/applications`; shared result, report, and plotting helpers live
+in `src/hybrid_qrl/utilities`. Examples should demonstrate one concept with
+small inputs. Experiments may generate datasets and reports but must write them
+outside the package source tree.
 
 ## Installation
 
@@ -72,7 +75,7 @@ Run the tests:
 Run the CartPole experiment:
 
 ```powershell
-.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole_benchmark.py `
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole.py benchmark `
   --quantum-backend dense --candidates 8
 ```
 
@@ -80,7 +83,7 @@ Run the 20-seed dynamic dispatch benchmark:
 
 ```powershell
 .\.venv\Scripts\python.exe `
-  .\hybrid_qrl\experiments\dispatch_scaling_benchmark.py `
+  .\hybrid_qrl\experiments\dispatch.py scaling `
   --seeds 20 --train-episodes 320 --k 16 --latency-ms 20
 ```
 
@@ -94,7 +97,7 @@ Run the conditional-advantage calibration study:
 
 ```powershell
 .\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\conditional_advantage_study.py `
+  .\hybrid_qrl\experiments\dispatch.py conditional `
   --seeds 20 --training-iterations 140 `
   --calibration-seeds 20 --phase-seeds 40 --k 16
 ```
@@ -111,7 +114,7 @@ Run the latency-aware delayed/asynchronous extension:
 ```powershell
 $env:PYTHONPATH = ".\hybrid_qrl\src"
 .\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\latency_aware_dispatch.py
+  .\hybrid_qrl\experiments\dispatch.py latency
 ```
 
 The default run assigns 1,000 ms to each environment step, applies a 3,000 ms
@@ -125,7 +128,7 @@ Run the fixed-K scale-aware and stable-backlog extension:
 ```powershell
 $env:PYTHONPATH = ".\hybrid_qrl\src"
 .\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\stable_backlog_scaling.py
+  .\hybrid_qrl\experiments\dispatch.py backlog
 ```
 
 This experiment retrains the actor on 20--100 decision environments, selects a

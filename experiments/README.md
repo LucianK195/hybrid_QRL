@@ -1,187 +1,104 @@
 # Experiments
 
-Experiment scripts contain reproducible benchmark orchestration rather than
-reusable library implementation.
+The directory has exactly one executable Python entry point per dataset:
 
-- `cartpole_benchmark.py`: offline linear-policy CartPole integration test.
-- `cartpole_budget_sweep.py`: comparison across candidate budgets `K`.
-- `cartpole_multiseed_study.py`: backend-by-budget matrix with paired,
-  multi-seed aggregation and JSON/Markdown reporting.
-- `dispatch_scaling_benchmark.py`: reward-trained dynamic resource dispatch at
-  20–100 binary decisions with serious optimization/search baselines, equal-K
-  and equal-latency protocols, dynamic rollouts, and robustness sweeps.
-- `conditional_advantage_study.py`: sampler-in-loop reward training,
-  epsilon-optimal/K95 metrics, dense/QuTiP/manual calibration at 8–12 qubits,
-  an eight-qubit dynamic pipeline proof, and a 20+20-seed physical phase map.
+| Dataset | Entry point | Stages |
+|---|---|---|
+| CartPole trajectories | `cartpole.py` | `benchmark`, `budget-sweep`, `multiseed` |
+| Synthetic dispatch graphs | `dispatch.py` | `scaling`, `conditional`, `latency`, `backlog`, `generalization`, `export`, `plot` |
+| Azure Packing trace | `azure_packing.py` | `benchmark` |
+| Azure bundle-conflict graphs | `azure_bundle.py` | `benchmark` |
 
-Run scripts from the repository root after installing `hybrid_qrl` in editable
-mode. Their default datasets and reports are written to the repository-level
-`results/` directory.
+The entry points contain no reusable implementation. OOP command objects live
+in `src/hybrid_qrl/applications`, domain logic lives in `src/hybrid_qrl`, and
+shared result/plot helpers live in `src/hybrid_qrl/utilities`, with all
+dataset-specific Markdown renderers isolated under
+`src/hybrid_qrl/utilities/reports`.
 
-`stable_backlog_scaling.py` is the fixed-K size-aware detuning confirmation and
-delayed stable-backlog study. It includes an identically delayed beam control.
-
-Run the complete multi-seed CartPole study with:
+Run commands from the workspace root after installing `hybrid_qrl` in editable
+mode, or set `PYTHONPATH=.\hybrid_qrl\src`. The default stage remains compatible
+with the former primary script, so both of these forms run the same CartPole
+benchmark:
 
 ```powershell
-.\.venv\Scripts\python.exe `
-  .\hybrid_qrl\experiments\cartpole_multiseed_study.py `
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole.py
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole.py benchmark
+```
+
+List all stages and inspect stage-specific arguments with:
+
+```powershell
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\dispatch.py --help
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\dispatch.py backlog --help
+```
+
+Former script names map directly to stages:
+
+| Former entry point | New command |
+|---|---|
+| `cartpole_benchmark.py` | `cartpole.py benchmark` |
+| `cartpole_budget_sweep.py` | `cartpole.py budget-sweep` |
+| `cartpole_multiseed_study.py` | `cartpole.py multiseed` |
+| `dispatch_scaling_benchmark.py` | `dispatch.py scaling` |
+| `conditional_advantage_study.py` | `dispatch.py conditional` |
+| `latency_aware_dispatch.py` | `dispatch.py latency` |
+| `stable_backlog_scaling.py` | `dispatch.py backlog` |
+| `dispatch_generalization_stress.py` | `dispatch.py generalization` |
+| `export_dispatch_test_dataset.py` | `dispatch.py export` |
+| `plot_dispatch_benchmark.py` | `dispatch.py plot` |
+| `azure_packing_benchmark.py` | `azure_packing.py benchmark` |
+| `azure_bundle_benchmark.py` | `azure_bundle.py benchmark` |
+
+## CartPole
+
+```powershell
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole.py multiseed `
   --backends dense qutip manual `
   --budgets 1 2 4 8 16 `
   --seeds 17 29 43 71
 ```
 
-This produces `results/cartpole_multiseed_results.json` with compact per-trial
-records and `results/cartpole_multiseed_report.md` with aggregate tables,
-paired confidence intervals, and limitations.
+The established JSON schemas and default filenames are retained:
+`cartpole_hybrid_comparison.json`, `cartpole_candidate_budget_sweep.json`,
+`cartpole_multiseed_results.json`, and `cartpole_multiseed_report.md`.
 
-The classical controls include direct argmax, epsilon-greedy, single-sample
-Boltzmann/softmax, uniform random shooting best-of-K, softmax best-of-K, and
-randomized weighted greedy best-of-K. These share the learned linear utility
-model; they compare action-selection mechanisms rather than different training
-algorithms such as PPO or DQN.
+## Synthetic dispatch graphs
 
-Run the dispatch benchmark with its preregistered minimum of 20 held-out seeds:
+The stages form one dataset lifecycle:
 
-```powershell
-.\.venv\Scripts\python.exe `
-  .\hybrid_qrl\experiments\dispatch_scaling_benchmark.py `
-  --seeds 20 --train-episodes 320 --k 16 --latency-ms 20
+```text
+scaling -> conditional -> latency/backlog -> generalization
+    |
+    +-> export -> plot
 ```
 
-The output files are `results/dispatch_benchmark_results.json` and
-`results/dispatch_benchmark_report.md`. The JSON retains per-instance solver
-status, MIP gap, candidate counts, raw feasibility, post-repair candidates,
-critic score, realized reward, reference regret, latency, and latency-budget
-compliance. The Rydberg path in this experiment is explicitly a scalable
-classical surrogate; it is not a neutral-atom hardware timing result.
-
-Run the conditional study with:
+Examples:
 
 ```powershell
-.\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\conditional_advantage_study.py `
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\dispatch.py scaling `
+  --seeds 20 --train-episodes 320 --k 16 --latency-ms 20
+
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\dispatch.py conditional `
   --seeds 20 --training-iterations 140 `
   --calibration-seeds 20 --phase-seeds 40 --k 16
+
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\dispatch.py latency
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\dispatch.py backlog
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\dispatch.py generalization
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\dispatch.py export
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\dispatch.py plot
 ```
 
-This produces `results/conditional_advantage_results.json` and
-`results/conditional_advantage_report.md`. The report uses a claim ladder:
-safe pipeline proof, surrogate opportunity, distribution transfer, and manual
-geometry-backend quality. Only passing every gate would justify a conditional
-quantum-assisted advantage claim.
+Each stage keeps its previous default input dependencies and output paths under
+the workspace-level `results`, `datasets`, and `figures` directories.
 
-## Held-out dispatch graph dataset
-
-`export_dispatch_test_dataset.py` freezes the paired held-out scaling states as
-a JSON Lines graph dataset with geometry, authoritative edges, node features,
-linear reward terms, reference reward, and a SHA-256 manifest.
+## Azure trace formulations
 
 ```powershell
-$env:PYTHONPATH = ".\hybrid_qrl\src"
-.\.venv\Scripts\python.exe `
-  .\hybrid_qrl\experiments\export_dispatch_test_dataset.py
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\azure_packing.py
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\azure_bundle.py
 ```
 
-The default dataset contains 80 test-only instances: 20 seeds at each of 20,
-40, 60, and 100 binary decisions. `datasets/dispatch_test_v1.jsonl` stores one
-graph per line and `datasets/dispatch_test_v1_manifest.json` records provenance,
-counts, reward semantics, and content hashes.
-
-After exporting the dataset, create the five editable SVG figures with:
-
-```powershell
-$env:PYTHONPATH = ".\hybrid_qrl\src"
-.\.venv\Scripts\python.exe `
-  .\hybrid_qrl\experiments\plot_dispatch_benchmark.py
-```
-
-## Latency-aware dispatch
-
-`latency_aware_dispatch.py` assigns physical duration to each synthetic
-environment step, replays a timestamped latency distribution, tracks persistent
-job identities, repairs stale actions, and compares blocking quantum execution
-with asynchronous beam/greedy fallback. It retains all conditional-advantage
-gates and adds measured-QPU, deadline, safety, return, and utilization gates.
-
-```powershell
-$env:PYTHONPATH = ".\hybrid_qrl\src"
-.\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\latency_aware_dispatch.py
-```
-
-The default deterministic stress trace validates the architecture but is not
-hardware evidence. Supply `--latency-trace` with timestamped observations whose
-source kind is `measured_qpu` for the physical-latency gate.
-
-## Scale-aware stable backlog
-
-Run the scaling and future-batch study with:
-
-```powershell
-$env:PYTHONPATH = ".\hybrid_qrl\src"
-.\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\stable_backlog_scaling.py
-```
-
-The default protocol holds `K=16`, uses separate selection and confirmation
-seeds, and compares the frozen legacy sampler, multi-size reward training,
-scale-aware detuning, and beam search. The future-batch section reserves only
-the highest-priority 25% of stable jobs, capped at 20, while beam handles the
-unreserved immediate lane. Results are written to
-`results/stable_backlog_scaling_results.json` and
-`results/stable_backlog_scaling_report.md`.
-
-## Generalization and candidate-budget stress test
-
-`dispatch_generalization_stress.py` freezes the trained model and selected
-scale-aware sampler, then varies job count, `K`, conflict density, deadline
-pressure, graph family, utility distribution, and utility correlation on new
-paired held-out seeds. Beam search receives the same candidate count and every
-state is normalized by its own MILP reward reference.
-
-```powershell
-$env:PYTHONPATH = ".\hybrid_qrl\src"
-.\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\dispatch_generalization_stress.py --seeds 20
-```
-
-The preregistered matrix is documented in
-`docs/generalization_stress_test_plan.md`. Raw records are written to
-`results/dispatch_generalization_stress.json`, with aggregate results in
-`results/dispatch_generalization_stress.md`.
-
-## Azure Packing 2020 trace benchmark
-
-`azure_packing_benchmark.py` evaluates chronological VM-request windows from
-the official Microsoft Azure Packing trace. It adds authoritative cumulative
-CPU, memory, SSD, and NIC constraints, mandatory repair, a reward-trained
-trace utility head and critic, capacity-aware baselines, and a zero-gap MILP
-reference.
-
-```powershell
-$env:PYTHONPATH = ".\hybrid_qrl\src"
-.\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\azure_packing_benchmark.py
-```
-
-The protocol and offline-lifetime limitation are documented in
-`docs/azure_packing_benchmark.md`.
-
-## Azure bundle-conflict benchmark
-
-`azure_bundle_benchmark.py` converts the same official trace into a
-configuration/set-packing problem. Each binary node is a complete
-capacity-feasible `(machine, bundle)` assignment, and graph edges exactly
-represent same-machine or shared-request conflicts. The report separates
-sampler quality inside the generated library from library coverage against a
-direct request-by-machine MILP.
-
-```powershell
-$env:PYTHONPATH = ".\hybrid_qrl\src"
-.\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\azure_bundle_benchmark.py
-```
-
-The formulation, references, and preregistered gates are documented in
-`docs/azure_bundle_benchmark.md`.
+Both entry points reuse the same official Azure Packing trace path and selected
+stable-backlog model by default. Their distinct result schemas, filenames, gate
+logic, and direct/bundle oracle summaries are unchanged.

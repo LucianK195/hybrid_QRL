@@ -131,7 +131,7 @@ Run the preregistered stress experiment from the workspace root:
 ```powershell
 $env:PYTHONPATH = ".\hybrid_qrl\src"
 .\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\latency_aware_dispatch.py
+  .\hybrid_qrl\experiments\dispatch.py latency
 ```
 
 Run the unchanged protocol with measured QPU timestamps:
@@ -139,7 +139,7 @@ Run the unchanged protocol with measured QPU timestamps:
 ```powershell
 $env:PYTHONPATH = ".\hybrid_qrl\src"
 .\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\latency_aware_dispatch.py `
+  .\hybrid_qrl\experiments\dispatch.py latency `
   --latency-trace .\path\to\measured_qpu_latency.json
 ```
 

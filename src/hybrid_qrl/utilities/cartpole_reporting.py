@@ -1,4 +1,4 @@
-"""Run and aggregate a multi-seed CartPole backend-by-budget study.
+"""Aggregate and render the multi-seed CartPole backend-by-budget report.
 
 This experiment repeats the existing CartPole integration benchmark across
 multiple candidate budgets, random seeds, and quantum simulator backends.  It
@@ -13,20 +13,13 @@ advantage.
 
 from __future__ import annotations
 
-import argparse
-import json
 import math
-import time
 from collections import defaultdict
 from datetime import date
-from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 from scipy.stats import t as student_t
-
-from cartpole_benchmark import run_benchmark
-
 
 POLICY_KEYS = (
     "random",
@@ -595,7 +588,7 @@ def render_markdown(
             "",
             "```powershell",
             ".\\.venv\\Scripts\\python.exe "
-            ".\\hybrid_qrl\\experiments\\cartpole_multiseed_study.py `",
+            ".\\hybrid_qrl\\experiments\\cartpole.py multiseed `",
             "  --backends " + " ".join(config["backends"]) + " `",
             "  --budgets " + " ".join(map(str, config["budgets"])) + " `",
             "  --seeds " + " ".join(map(str, config["seeds"])),
@@ -604,119 +597,3 @@ def render_markdown(
         ]
     )
     return "\n".join(lines)
-
-
-def main() -> None:
-    """Parse the study matrix, execute all trials, and write both reports."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--backends",
-        nargs="+",
-        choices=("dense", "qutip", "manual"),
-        default=["dense", "qutip", "manual"],
-    )
-    parser.add_argument(
-        "--budgets", type=int, nargs="+", default=[1, 2, 4, 8, 16]
-    )
-    parser.add_argument(
-        "--seeds", type=int, nargs="+", default=[17, 29, 43, 71]
-    )
-    parser.add_argument("--training-episodes", type=int, default=64)
-    parser.add_argument("--evaluation-episodes", type=int, default=30)
-    parser.add_argument("--epsilon", type=float, default=0.05)
-    parser.add_argument("--softmax-temperature", type=float, default=0.25)
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("results/cartpole_multiseed_results.json"),
-    )
-    parser.add_argument(
-        "--report",
-        type=Path,
-        default=Path("results/cartpole_multiseed_report.md"),
-    )
-    args = parser.parse_args()
-    if any(value <= 0 for value in args.budgets):
-        parser.error("candidate budgets must be positive")
-    if args.training_episodes <= 0 or args.evaluation_episodes <= 0:
-        parser.error("episode counts must be positive")
-    if not 0.0 <= args.epsilon <= 1.0:
-        parser.error("epsilon must be between zero and one")
-    if args.softmax_temperature <= 0.0:
-        parser.error("softmax temperature must be positive")
-
-    config = {
-        "backends": args.backends,
-        "budgets": args.budgets,
-        "seeds": args.seeds,
-        "training_episodes": args.training_episodes,
-        "evaluation_episodes": args.evaluation_episodes,
-        "epsilon": args.epsilon,
-        "softmax_temperature": args.softmax_temperature,
-        "cache_decimals": 2,
-    }
-    combinations = [
-        (backend, budget, seed)
-        for backend in args.backends
-        for budget in args.budgets
-        for seed in args.seeds
-    ]
-    trials = []
-    study_start = time.perf_counter()
-    for index, (backend, budget, seed) in enumerate(combinations, start=1):
-        print(
-            f"[{index:02d}/{len(combinations)}] "
-            f"backend={backend} K={budget} seed={seed}",
-            flush=True,
-        )
-        trial_start = time.perf_counter()
-        report = run_benchmark(
-            training_episodes=args.training_episodes,
-            evaluation_episodes=args.evaluation_episodes,
-            candidates=budget,
-            seed=seed,
-            dataset_output=None,
-            quantum_backend=backend,
-            epsilon=args.epsilon,
-            softmax_temperature=args.softmax_temperature,
-        )
-        trials.append(_compact_trial(report, time.perf_counter() - trial_start))
-
-    total_seconds = time.perf_counter() - study_start
-    aggregate = aggregate_trials(trials)
-    output = {
-        "experiment": "Multi-seed CartPole backend-by-budget study",
-        "interpretation": (
-            "Two-action integration and best-of-K reliability study; not a "
-            "quantum-scaling or advantage experiment."
-        ),
-        "config": config,
-        "total_trials": len(trials),
-        "total_elapsed_seconds": total_seconds,
-        "aggregate": aggregate,
-        "trials": trials,
-    }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        json.dumps(output, indent=2) + "\n", encoding="utf-8"
-    )
-    args.report.write_text(
-        render_markdown(config, aggregate, total_seconds),
-        encoding="utf-8",
-    )
-    print(
-        json.dumps(
-            {
-                "total_trials": len(trials),
-                "total_elapsed_seconds": total_seconds,
-                "output": str(args.output),
-                "report": str(args.report),
-            },
-            indent=2,
-        )
-    )
-
-
-if __name__ == "__main__":
-    main()

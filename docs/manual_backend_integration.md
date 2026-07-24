@@ -185,7 +185,7 @@ Six-decision constrained-action example:
 CartPole integration:
 
 ```powershell
-.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole_benchmark.py `
+.\.venv\Scripts\python.exe .\hybrid_qrl\experiments\cartpole.py benchmark `
   --quantum-backend manual `
   --candidates 16 `
   --seed 17 `

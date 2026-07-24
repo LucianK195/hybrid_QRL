@@ -115,7 +115,7 @@ Then run:
 ```powershell
 $env:PYTHONPATH = ".\hybrid_qrl\src"
 .\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\azure_packing_benchmark.py
+  .\hybrid_qrl\experiments\azure_packing.py
 ```
 
 The raw records and report are written to

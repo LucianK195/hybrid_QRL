@@ -130,7 +130,7 @@ These gates establish neither hardware transfer nor quantum advantage.
 ```powershell
 $env:PYTHONPATH = ".\hybrid_qrl\src"
 .\.venv\Scripts\python.exe -B `
-  .\hybrid_qrl\experiments\azure_bundle_benchmark.py
+  .\hybrid_qrl\experiments\azure_bundle.py
 ```
 
 Outputs are written to:

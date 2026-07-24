@@ -124,7 +124,7 @@ From the repository root:
 
 ```powershell
 $env:PYTHONPATH = ".\hybrid_qrl\src"
-python .\hybrid_qrl\experiments\dispatch_generalization_stress.py
+python .\hybrid_qrl\experiments\dispatch.py generalization
 ```
 
 The command writes raw JSON records and a Markdown result report under
