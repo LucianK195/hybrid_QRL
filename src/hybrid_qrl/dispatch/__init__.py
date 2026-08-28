@@ -27,6 +27,7 @@ from .latency_benchmark import (
 )
 from .learning import ActorCriticModel, TrainingConfig, train_actor_critic
 from .sampler_loop import SamplerLoopTrainingConfig, train_sampler_in_loop
+from .wifi_mis import WifiMISConfig, run_wifi_mis_benchmark
 
 __all__ = [
     "ActorCriticModel",
@@ -42,6 +43,7 @@ __all__ = [
     "LatencyTrace",
     "SamplerLoopTrainingConfig",
     "TrainingConfig",
+    "WifiMISConfig",
     "export_test_dataset",
     "induced_dispatch_state",
     "run_backlog_benchmark",
@@ -49,6 +51,7 @@ __all__ = [
     "run_azure_packing_benchmark",
     "run_generalization_benchmark",
     "run_latency_aware_benchmark",
+    "run_wifi_mis_benchmark",
     "train_actor_critic",
     "train_sampler_in_loop",
 ]

@@ -137,6 +137,48 @@ standardized utility-to-detuning map on disjoint seeds, and confirms it at
 sampler while beam search handles the immediate lane. An identically delayed
 beam planner controls for the benefit of backlog partitioning.
 
+Run the public Wi-Fi MWIS application study:
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B .\hybrid_qrl\experiments\wifi_mis.py
+```
+
+Each pending Wi-Fi transmission becomes a weighted vertex and same-slot
+interference becomes a unit-disk edge. The benchmark freezes a pulse selected
+on disjoint seeds, evaluates three held-out hotspot families, writes a Chinese
+academic report, and generates PNG/SVG comparison figures. Its positive gate
+is deliberately limited to ideal-sampler candidate quality; it is not a
+physical-QPU or end-to-end latency claim.
+
+Run the frozen modular Rydberg comparison on the Azure Packing 2020 trace:
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\azure_bundle.py modular
+```
+
+The profile evaluates eight machine slots and 96 capacity-feasible bundle
+decisions on 20 held-out trace windows. Its primary comparison is modular
+Rydberg versus randomized greedy at `K=8`; beam search remains the strongest
+classical baseline. The Rydberg path is a sequential classical surrogate, not
+a physical QPU execution.
+
+Run the frozen four-module portfolio on two Azure hardware generations that
+were never used for architecture or parameter selection:
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\azure_bundle.py external-portfolio
+```
+
+The final report compares only the quantum portfolio, randomized controls,
+deterministic layout selection, and beam search at `K=8`. It reports replicated
+potential advantage over randomized greedy and same-space randomized layout,
+while retaining the ideal-simulation and strong-baseline limitations.
+
 ## Documentation
 
 - [Architecture and extension guide](docs/architecture.md)

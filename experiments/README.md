@@ -8,6 +8,7 @@ The directory has exactly one executable Python entry point per dataset:
 | Synthetic dispatch graphs | `dispatch.py` | `scaling`, `conditional`, `latency`, `backlog`, `generalization`, `export`, `plot` |
 | Azure Packing trace | `azure_packing.py` | `benchmark` |
 | Azure bundle-conflict graphs | `azure_bundle.py` | `benchmark` |
+| Public Wi-Fi interference graphs | `wifi_mis.py` | `benchmark` |
 
 The entry points contain no reusable implementation. OOP command objects live
 in `src/hybrid_qrl/applications`, domain logic lives in `src/hybrid_qrl`, and
@@ -102,3 +103,18 @@ the workspace-level `results`, `datasets`, and `figures` directories.
 Both entry points reuse the same official Azure Packing trace path and selected
 stable-backlog model by default. Their distinct result schemas, filenames, gate
 logic, and direct/bundle oracle summaries are unchanged.
+
+## Public Wi-Fi MWIS
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B .\hybrid_qrl\experiments\wifi_mis.py
+```
+
+The experiment maps one busy-hotspot airtime frame to a maximum-weight
+independent set on a unit-disk interference graph. It selects one ideal
+Rydberg pulse on disjoint bottleneck training seeds, freezes it, and compares
+held-out QuTiP distributions with randomized greedy, one-swap local search,
+simulated annealing, beam search, and an exact 12-node oracle. The generated
+Chinese academic report and publication-ready figures explicitly distinguish
+ideal sampler quality from physical-QPU advantage.

@@ -139,3 +139,44 @@ Outputs are written to:
 results/azure_bundle_benchmark.json
 results/azure_bundle_benchmark.md
 ```
+
+## Modular Rydberg extension
+
+The frozen `modular` profile uses eight machine slots and 96 bundle decisions.
+Rather than forcing the dense multi-machine graph into one two-dimensional
+register, it samples one blockade clique per machine and applies shared-request
+masks between modules. The pulse regime was selected on trace days 6.0--9.5;
+the final comparison remains isolated on days 10.0--13.75.
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\azure_bundle.py modular
+```
+
+The primary preregistered comparison is modular Rydberg versus randomized
+greedy at `K=8`. Beam search remains in the output as the strongest tested
+classical baseline. Outputs are written to
+`results/azure_modular_rydberg_results.json` and
+`results/azure_modular_rydberg_report.md`.
+
+## External-generation quantum portfolio
+
+The `external-portfolio` profile freezes all architecture and pulse settings
+selected on generation 16, then evaluates generations 11 and 23. These were
+chosen as the next two generations by VM-type coverage and were not inspected
+during tuning. The `K=8` portfolio divides its budget equally among layout
+Grover/QAOA, paired Grover/QAOA, one-hot XY/QAOA, and modular Rydberg samplers.
+
+```powershell
+$env:PYTHONPATH = ".\hybrid_qrl\src"
+.\.venv\Scripts\python.exe -B `
+  .\hybrid_qrl\experiments\azure_bundle.py external-portfolio
+```
+
+The short final report compares the frozen portfolio with randomized greedy,
+same-space randomized layout, deterministic layout selection, and beam search.
+All quantum modules are ideal classical simulations or surrogates; the result
+supports a potential sampling advantage, not physical-QPU or runtime advantage.
+Outputs are written to `results/azure_external_portfolio_results.json` and
+`results/azure_external_portfolio_report.md`.

@@ -14,10 +14,227 @@ def _metric(row: dict[str, Any], metric: str) -> str:
     )
 
 
+def _render_modular_report(results: dict[str, Any]) -> str:
+    """Render the exhibit-facing modular Rydberg result in one page."""
+
+    config = results["config"]
+    summary = results["summary"]
+    nodes = max(config["bundle_nodes"])
+    capacity = max(config["capacities"])
+    primary_k = int(config["primary_k"])
+    quantum = _find(
+        summary,
+        method="modular_rydberg",
+        bundle_nodes=nodes,
+        capacity=capacity,
+        k=primary_k,
+    )
+    greedy = _find(
+        summary,
+        method="randomized_greedy",
+        bundle_nodes=nodes,
+        capacity=capacity,
+        k=primary_k,
+    )
+    beam = _find(
+        summary,
+        method="beam_search",
+        bundle_nodes=nodes,
+        capacity=capacity,
+        k=primary_k,
+    )
+    evidence = results["primary_evidence"]
+    paired = evidence["paired_best_bundle"]
+    efficiencies = evidence["candidate_efficiency"]
+    q_eff = efficiencies["modular_rydberg"]
+    g_eff = efficiencies["randomized_greedy"]
+    return "\n".join(
+        [
+            "# Quantum-assisted Azure allocation",
+            "",
+            (
+                f"On {quantum['trials']} held-out Azure trace windows with "
+                f"{config['machine_slots']} machine slots and {nodes} bundle "
+                f"decisions, the modular Rydberg QRL sampler reached "
+                f"**{quantum['best_bundle_ratio_mean']:.1%}** of the exact "
+                f"bundle optimum using only **K={primary_k}** candidates."
+            ),
+            "",
+            "## Final comparison",
+            "",
+            _table(
+                ["candidate model", "quality / optimum", "end-to-end / direct"],
+                [
+                    [
+                        "Modular Rydberg QRL",
+                        f"**{quantum['best_bundle_ratio_mean']:.1%}**",
+                        f"**{quantum['best_end_to_end_ratio_mean']:.1%}**",
+                    ],
+                    [
+                        "Randomized greedy",
+                        f"{greedy['best_bundle_ratio_mean']:.1%}",
+                        f"{greedy['best_end_to_end_ratio_mean']:.1%}",
+                    ],
+                    [
+                        "Beam search",
+                        f"{beam['best_bundle_ratio_mean']:.1%}",
+                        f"{beam['best_end_to_end_ratio_mean']:.1%}",
+                    ],
+                ],
+            ),
+            "",
+            (
+                "Against randomized greedy, the paired improvement was "
+                f"**{paired['mean']:+.1%}** (bootstrap 95% interval "
+                f"{paired['bootstrap_ci95_low']:+.1%} to "
+                f"{paired['bootstrap_ci95_high']:+.1%}; exact one-sided "
+                f"p={paired['exact_one_sided_sign_flip_p']:.3f})."
+            ),
+            "",
+            (
+                "The median candidate budget needed to reach 95% of the bundle "
+                f"optimum was **K={q_eff['median_k']:.0f}** for modular "
+                f"Rydberg versus **K={g_eff['median_k']:.0f}** for randomized "
+                "greedy. Beam search remained the strongest tested classical "
+                "baseline."
+            ),
+            "",
+            "## Evidence boundary",
+            "",
+            (
+                "The result demonstrates a candidate-efficiency advantage over "
+                "randomized greedy on this frozen trace benchmark. The Rydberg "
+                "samples are produced by a sequential classical surrogate, not "
+                "a physical QPU; hardware quantum advantage is not established."
+            ),
+            "",
+        ]
+    )
+
+
+def render_external_portfolio_report(results: dict[str, Any]) -> str:
+    """Render the short cross-generation quantum-portfolio report."""
+
+    config = results["config"]
+    summary = results["summary"]
+    rows = []
+    for machine_id in config["machine_ids"]:
+        for method in (
+            "quantum_portfolio",
+            "randomized_greedy",
+            "randomized_layout",
+            "deterministic_layout",
+            "beam_search",
+        ):
+            row = next(
+                item
+                for item in summary
+                if item["machine_id"] == machine_id
+                and item["method"] == method
+            )
+            rows.append(
+                [
+                    str(machine_id),
+                    method,
+                    f"{row['best_bundle_ratio_mean']:.1%}",
+                    f"{row['best_end_to_end_ratio_mean']:.1%}",
+                    f"{row['epsilon_coverage_mean']:.0%}",
+                ]
+            )
+    lines = [
+        "# Potential quantum advantage on external Azure datasets",
+        "",
+        (
+            f"A frozen four-module quantum portfolio was evaluated at K="
+            f"{config['candidates']} on {len(config['machine_ids'])} Azure "
+            "hardware generations that were not used for architecture or "
+            "parameter selection."
+        ),
+        "",
+        _table(
+            [
+                "dataset",
+                "candidate model",
+                "quality / optimum",
+                "end-to-end / direct",
+                "95%-quality hit",
+            ],
+            rows,
+        ),
+        "",
+        "## Replicated paired effects",
+        "",
+    ]
+    for machine_id in config["machine_ids"]:
+        comparisons = results["comparisons"][str(machine_id)]
+        greedy = comparisons["randomized_greedy"]["bundle"]
+        layout = comparisons["randomized_layout"]["bundle"]
+        lines.extend(
+            [
+                (
+                    f"- Generation {machine_id}: versus randomized greedy "
+                    f"**{greedy['mean']:+.1%}** (bootstrap 95% "
+                    f"{greedy['bootstrap_ci95_low']:+.1%} to "
+                    f"{greedy['bootstrap_ci95_high']:+.1%}, exact p="
+                    f"{greedy['exact_one_sided_sign_flip_p']:.4g}); versus the "
+                    f"same-space randomized layout control "
+                    f"**{layout['mean']:+.1%}** (bootstrap 95% "
+                    f"{layout['bootstrap_ci95_low']:+.1%} to "
+                    f"{layout['bootstrap_ci95_high']:+.1%}, exact p="
+                    f"{layout['exact_one_sided_sign_flip_p']:.4g})."
+                ),
+                "",
+            ]
+        )
+    bad_oracles = [
+        row
+        for row in results["oracles"]
+        if row["direct_gap"] > 0.01
+    ]
+    max_direct_gap = max(
+        row["direct_gap"] for row in results["oracles"]
+    )
+    lines.extend(
+        [
+            "## Conclusion",
+            "",
+            (
+                "The frozen quantum portfolio shows a replicated potential "
+                "advantage over randomized greedy and an equal-state-space "
+                "randomized layout sampler. It is competitive with, but does "
+                "not consistently exceed, deterministic layout selection or "
+                "beam search."
+            ),
+            "",
+            (
+                "All bundle optima were proven exact. Direct-assignment "
+                f"references were within 1% on "
+                f"{len(results['oracles']) - len(bad_oracles)} of "
+                f"{len(results['oracles'])} windows; end-to-end ratios use "
+                f"the conservative solver bound (maximum gap "
+                f"{max_direct_gap:.2%})."
+            ),
+            "",
+            "## Evidence boundary",
+            "",
+            (
+                "All quantum modules are ideal classical simulations or "
+                "surrogates. This is evidence of a quantum-model sampling "
+                "opportunity, not physical-QPU quantum advantage or runtime "
+                "speedup."
+            ),
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def render_azure_bundle_report(results: dict[str, Any]) -> str:
     """Render the concise benchmark report from the recorded results."""
 
     config = results["config"]
+    if config.get("primary_method") == "modular_rydberg":
+        return _render_modular_report(results)
     summary = results["summary"]
     target_nodes = max(config["bundle_nodes"])
     capacity = max(config["capacities"])

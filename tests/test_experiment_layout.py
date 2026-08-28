@@ -6,6 +6,8 @@ from pathlib import Path
 
 from hybrid_qrl.applications.cartpole import CartPoleApplication
 from hybrid_qrl.applications.dispatch import DispatchApplication
+from hybrid_qrl.applications.azure_bundle import AzureBundleApplication
+from hybrid_qrl.applications.wifi_mis import WifiMISApplication
 
 
 class ExperimentLayoutTests(unittest.TestCase):
@@ -19,6 +21,7 @@ class ExperimentLayoutTests(unittest.TestCase):
                 "azure_packing.py",
                 "cartpole.py",
                 "dispatch.py",
+                "wifi_mis.py",
             },
         )
 
@@ -40,6 +43,24 @@ class ExperimentLayoutTests(unittest.TestCase):
                 "export",
                 "plot",
             },
+        )
+
+    def test_azure_bundle_stages_remain_available(self) -> None:
+        self.assertEqual(
+            {command.name for command in AzureBundleApplication.commands},
+            {
+                "benchmark",
+                "modular",
+                "xy-qaoa",
+                "paired-grover",
+                "external-portfolio",
+            },
+        )
+
+    def test_wifi_mis_stage_remains_available(self) -> None:
+        self.assertEqual(
+            {command.name for command in WifiMISApplication.commands},
+            {"benchmark"},
         )
 
     def test_dispatch_modules_do_not_define_report_renderers(self) -> None:
@@ -78,6 +99,7 @@ class ExperimentLayoutTests(unittest.TestCase):
                 "dispatch.py",
                 "generalization.py",
                 "latency.py",
+                "wifi_mis.py",
             },
         )
 

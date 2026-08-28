@@ -42,7 +42,10 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import csr_matrix
 
 from ..core import Action, ConflictGraph
-from ..utilities.reports.azure_bundle import render_azure_bundle_report
+from ..utilities.reports.azure_bundle import (
+    render_azure_bundle_report,
+    render_external_portfolio_report,
+)
 from ..utilities.results import ResultWriter
 from .azure_packing import (
     AzureTraceWindow,
@@ -50,7 +53,7 @@ from .azure_packing import (
     load_trace_windows,
     trace_profile,
 )
-from .backlog_benchmark import SamplerRegime
+from .backlog_benchmark import REGIME_GRID, SamplerRegime
 from .baselines import (
     ProposalConfig,
     generate_candidates,
@@ -62,12 +65,89 @@ from .environment import DispatchState, graph_from_positions
 
 
 BUNDLE_METHODS = (
+    "layout_grover_qaoa",
+    "randomized_layout",
+    "deterministic_layout",
+    "quantum_portfolio",
+    "paired_grover_qaoa",
+    "modular_xy_qaoa",
+    "modular_rydberg",
     "rydberg_geometry",
     "blockade_exact_graph",
     "repair_only",
     "beam_search",
     "randomized_greedy",
 )
+
+
+@dataclass(frozen=True)
+class QuantumWalkRegime:
+    """Angles for a one-hot, constraint-preserving quantum-walk module."""
+
+    gamma: float = 1.0
+    beta: float = 1.0
+    depth: int = 2
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.gamma) or self.gamma <= 0:
+            raise ValueError("quantum-walk gamma must be positive and finite")
+        if not np.isfinite(self.beta) or self.beta <= 0:
+            raise ValueError("quantum-walk beta must be positive and finite")
+        if self.depth <= 0:
+            raise ValueError("quantum-walk depth must be positive")
+
+
+@dataclass(frozen=True)
+class ExternalPortfolioConfig:
+    """Frozen cross-generation validation for the quantum-module portfolio."""
+
+    machine_ids: tuple[int, ...] = (11, 23)
+    machine_slots: int = 8
+    raw_jobs: int = 200
+    bundle_nodes: int = 96
+    capacity: float = 0.25
+    candidates: int = 8
+    train_windows: int = 30
+    test_windows: int = 20
+    train_day_start: float = 0.25
+    train_day_end: float = 5.5
+    test_day_start: float = 10.0
+    test_day_end: float = 13.75
+    direct_milp_time_limit_ms: float = 10_000.0
+    direct_milp_retry_limit_ms: float = 30_000.0
+    bundle_milp_time_limit_ms: float = 5_000.0
+    quantum_walk_gamma: float = 0.8
+    quantum_walk_beta: float = 1.2
+    quantum_walk_depth: int = 3
+    seed: int = 1_700_000
+
+    def __post_init__(self) -> None:
+        if not self.machine_ids or len(set(self.machine_ids)) != len(
+            self.machine_ids
+        ):
+            raise ValueError("machine_ids must be non-empty and unique")
+        if self.machine_slots < 2 or self.raw_jobs <= 0:
+            raise ValueError("external portfolio dimensions are invalid")
+        if self.bundle_nodes <= 0 or self.bundle_nodes % self.machine_slots:
+            raise ValueError("bundle_nodes must divide across machine slots")
+        if not 0.0 < self.capacity <= 1.0 or self.candidates <= 0:
+            raise ValueError("external capacity or candidate budget is invalid")
+        if self.train_windows <= 0 or self.test_windows <= 0:
+            raise ValueError("external window counts must be positive")
+        if self.train_day_end > self.test_day_start:
+            raise ValueError("external train and test splits overlap")
+        if (
+            self.direct_milp_time_limit_ms <= 0
+            or self.direct_milp_retry_limit_ms
+            < self.direct_milp_time_limit_ms
+            or self.bundle_milp_time_limit_ms <= 0
+        ):
+            raise ValueError("external MILP limits must be positive")
+        QuantumWalkRegime(
+            self.quantum_walk_gamma,
+            self.quantum_walk_beta,
+            self.quantum_walk_depth,
+        )
 
 
 @dataclass(frozen=True)
@@ -95,6 +175,13 @@ class AzureBundleConfig:
     epsilon: float = 0.05
     direct_milp_time_limit_ms: float = 5_000.0
     bundle_milp_time_limit_ms: float = 2_000.0
+    sampler_regime: str = "stable"
+    primary_method: str = "rydberg_geometry"
+    comparison_method: str = "repair_only"
+    primary_k: int = 16
+    quantum_walk_gamma: float = 1.0
+    quantum_walk_beta: float = 1.0
+    quantum_walk_depth: int = 2
     seed: int = 710_923
 
     def __post_init__(self) -> None:
@@ -137,6 +224,25 @@ class AzureBundleConfig:
             or self.bundle_milp_time_limit_ms <= 0
         ):
             raise ValueError("MILP time limits must be positive")
+        regime_names = {regime.name for regime in REGIME_GRID}
+        if (
+            self.sampler_regime != "stable"
+            and self.sampler_regime not in regime_names
+        ):
+            raise ValueError("sampler_regime must be 'stable' or a known regime")
+        if self.primary_method not in BUNDLE_METHODS:
+            raise ValueError("primary_method must be a known bundle method")
+        if self.comparison_method not in BUNDLE_METHODS:
+            raise ValueError("comparison_method must be a known bundle method")
+        if self.primary_method == self.comparison_method:
+            raise ValueError("primary and comparison methods must differ")
+        if self.primary_k not in self.k_values:
+            raise ValueError("primary_k must be included in k_values")
+        QuantumWalkRegime(
+            gamma=self.quantum_walk_gamma,
+            beta=self.quantum_walk_beta,
+            depth=self.quantum_walk_depth,
+        )
 
 
 @dataclass(frozen=True)
@@ -293,6 +399,13 @@ def _file_sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _method_seed_offset(method: str) -> int:
+    """Return an order-independent deterministic RNG stream for one method."""
+
+    digest = sha256(method.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], byteorder="little", signed=False)
 
 
 def _ridge(
@@ -766,6 +879,379 @@ def _blockade_candidates(
     return output
 
 
+def _modular_blockade_candidates(
+    instance: AzureBundleInstance,
+    weights: np.ndarray,
+    candidates: int,
+    regime: SamplerRegime,
+    rng: np.random.Generator,
+) -> list[Action]:
+    """Sample one capacity-feasible bundle per machine with feed-forward masks.
+
+    The full bundle conflict graph is generally not a two-dimensional unit-disk
+    graph: each machine contributes a clique, while shared VM requests create
+    sparse cross-machine exclusions.  Embedding all of those edges in one
+    register creates false blockade edges.  This model instead assigns one
+    blockade clique to each machine slot.  After a clique is measured, bundles
+    containing an already allocated request are masked from subsequent
+    registers.  Alternating the machine order avoids privileging one slot.
+
+    Every returned action is feasible before the authoritative repair layer.
+    The routine remains a classical surrogate for sequential neutral-atom
+    modules, not a hardware execution.
+    """
+
+    machine_nodes: dict[int, list[int]] = defaultdict(list)
+    for index, node in enumerate(instance.nodes):
+        machine_nodes[node.machine].append(index)
+    machines = tuple(sorted(machine_nodes))
+    output: list[Action] = []
+    paired_order: list[int] | None = None
+    for candidate_index in range(candidates):
+        selected: list[int] = []
+        allocated: set[int] = set()
+        if candidate_index % 2 == 0:
+            order = [int(value) for value in rng.permutation(machines)]
+            paired_order = order
+        else:
+            # Antithetic ordering gives every early/late machine decision a
+            # matched counterpart while exploring more than the two fixed
+            # orders used by the initial prototype.
+            order = list(reversed(paired_order or list(machines)))
+        for machine in order:
+            eligible = [
+                index
+                for index in machine_nodes[machine]
+                if allocated.isdisjoint(instance.nodes[index].members)
+            ]
+            if not eligible:
+                continue
+            clique = ConflictGraph(
+                nodes=len(eligible),
+                edges=tuple(
+                    (left, right)
+                    for left in range(len(eligible))
+                    for right in range(left + 1, len(eligible))
+                ),
+                max_selected=1,
+            )
+            local = _blockade_candidates(
+                clique,
+                weights[np.asarray(eligible, dtype=int)],
+                1,
+                regime,
+                rng,
+            )[0]
+            chosen = [
+                eligible[index] for index, bit in enumerate(local) if bit
+            ]
+            if not chosen:
+                continue
+            node_index = chosen[0]
+            selected.append(node_index)
+            allocated.update(instance.nodes[node_index].members)
+        output.append(
+            tuple(int(index in selected) for index in range(len(instance.nodes)))
+        )
+    return output
+
+
+def _one_hot_xy_probabilities(
+    weights: np.ndarray,
+    regime: QuantumWalkRegime,
+) -> np.ndarray:
+    """Evolve an ideal XY/QAOA walk inside the one-excitation subspace.
+
+    A machine with ``m`` eligible bundles is represented by ``m`` qubits, but
+    the state remains in the one-hot subspace spanned by ``|100...0>`` through
+    ``|000...1>``.  The cost phase encodes learned bundle utility and the XY
+    complete-graph mixer preserves excitation number exactly.  Working in the
+    reduced subspace is an exact ideal-state simulation of that module.
+    """
+
+    values = np.asarray(weights, dtype=float)
+    count = len(values)
+    if count == 0:
+        return np.empty(0, dtype=float)
+    if count == 1:
+        return np.ones(1, dtype=float)
+    deviation = float(np.std(values))
+    encoded = (
+        np.zeros(count, dtype=float)
+        if deviation <= 1e-12
+        else (values - float(np.mean(values))) / deviation
+    )
+    state = np.full(count, 1.0 / np.sqrt(count), dtype=np.complex128)
+    orthogonal_phase = np.exp(1j * regime.beta / (count - 1))
+    uniform_phase = np.exp(-1j * regime.beta)
+    for layer in range(regime.depth):
+        progress = (layer + 1) / regime.depth
+        state *= np.exp(-1j * regime.gamma * progress * encoded)
+        mean_amplitude = np.mean(state)
+        state = (
+            orthogonal_phase * state
+            + (uniform_phase - orthogonal_phase) * mean_amplitude
+        )
+    probabilities = np.abs(state) ** 2
+    return probabilities / float(np.sum(probabilities))
+
+
+def _modular_xy_qaoa_candidates(
+    instance: AzureBundleInstance,
+    weights: np.ndarray,
+    candidates: int,
+    regime: QuantumWalkRegime,
+    rng: np.random.Generator,
+) -> list[Action]:
+    """Compose one-hot XY/QAOA modules with classical feed-forward masks."""
+
+    machine_nodes: dict[int, list[int]] = defaultdict(list)
+    for index, node in enumerate(instance.nodes):
+        machine_nodes[node.machine].append(index)
+    machines = tuple(sorted(machine_nodes))
+    output: list[Action] = []
+    paired_order: list[int] | None = None
+    for candidate_index in range(candidates):
+        allocated: set[int] = set()
+        selected: list[int] = []
+        if candidate_index % 2 == 0:
+            order = [int(value) for value in rng.permutation(machines)]
+            paired_order = order
+        else:
+            order = list(reversed(paired_order or list(machines)))
+        for machine in order:
+            eligible = [
+                index
+                for index in machine_nodes[machine]
+                if allocated.isdisjoint(instance.nodes[index].members)
+            ]
+            if not eligible:
+                continue
+            probabilities = _one_hot_xy_probabilities(
+                weights[np.asarray(eligible, dtype=int)], regime
+            )
+            local = int(rng.choice(len(eligible), p=probabilities))
+            node_index = eligible[local]
+            selected.append(node_index)
+            allocated.update(instance.nodes[node_index].members)
+        output.append(
+            tuple(int(index in selected) for index in range(len(instance.nodes)))
+        )
+    return output
+
+
+def _grover_qaoa_probabilities(
+    values: np.ndarray,
+    regime: QuantumWalkRegime,
+) -> np.ndarray:
+    """Evolve uniform feasible states with cost and Grover-mixer phases."""
+
+    costs = np.asarray(values, dtype=float)
+    count = len(costs)
+    if count == 0:
+        return np.empty(0, dtype=float)
+    if count == 1:
+        return np.ones(1, dtype=float)
+    deviation = float(np.std(costs))
+    encoded = (
+        np.zeros(count, dtype=float)
+        if deviation <= 1e-12
+        else (costs - float(np.mean(costs))) / deviation
+    )
+    state = np.full(count, 1.0 / np.sqrt(count), dtype=np.complex128)
+    mixer_phase = np.exp(-1j * regime.beta)
+    for layer in range(regime.depth):
+        progress = (layer + 1) / regime.depth
+        state *= np.exp(-1j * regime.gamma * progress * encoded)
+        projection = np.mean(state)
+        state += (mixer_phase - 1.0) * projection
+    probabilities = np.abs(state) ** 2
+    return probabilities / float(np.sum(probabilities))
+
+
+def _paired_grover_qaoa_candidates(
+    instance: AzureBundleInstance,
+    weights: np.ndarray,
+    candidates: int,
+    regime: QuantumWalkRegime,
+    rng: np.random.Generator,
+) -> list[Action]:
+    """Jointly sample compatible bundles for pairs of machine slots.
+
+    Each module's computational basis is restricted to compatible pairs of
+    complete machine bundles.  Cost phases encode their summed learned value;
+    a Grover mixer creates interference across all feasible pair assignments.
+    Thus cross-machine duplicate-request constraints enter the quantum state
+    preparation rather than being left to repair after independent samples.
+    """
+
+    machine_nodes: dict[int, list[int]] = defaultdict(list)
+    for index, node in enumerate(instance.nodes):
+        machine_nodes[node.machine].append(index)
+    machines = tuple(sorted(machine_nodes))
+    output: list[Action] = []
+    paired_order: list[int] | None = None
+    member_sets = [set(node.members) for node in instance.nodes]
+    for candidate_index in range(candidates):
+        allocated: set[int] = set()
+        selected: list[int] = []
+        if candidate_index % 2 == 0:
+            order = [int(value) for value in rng.permutation(machines)]
+            paired_order = order
+        else:
+            order = list(reversed(paired_order or list(machines)))
+        for offset in range(0, len(order), 2):
+            first = order[offset]
+            first_nodes = [
+                index
+                for index in machine_nodes[first]
+                if allocated.isdisjoint(member_sets[index])
+            ]
+            if not first_nodes:
+                continue
+            if offset + 1 == len(order):
+                probabilities = _one_hot_xy_probabilities(
+                    weights[np.asarray(first_nodes, dtype=int)], regime
+                )
+                choice = first_nodes[
+                    int(rng.choice(len(first_nodes), p=probabilities))
+                ]
+                selected.append(choice)
+                allocated.update(member_sets[choice])
+                continue
+            second = order[offset + 1]
+            second_nodes = [
+                index
+                for index in machine_nodes[second]
+                if allocated.isdisjoint(member_sets[index])
+            ]
+            pairs = [
+                (left, right)
+                for left in first_nodes
+                for right in second_nodes
+                if member_sets[left].isdisjoint(member_sets[right])
+            ]
+            if not pairs:
+                continue
+            pair_values = np.asarray(
+                [weights[left] + weights[right] for left, right in pairs]
+            )
+            probabilities = _grover_qaoa_probabilities(pair_values, regime)
+            left, right = pairs[
+                int(rng.choice(len(pairs), p=probabilities))
+            ]
+            selected.extend((left, right))
+            allocated.update(member_sets[left])
+            allocated.update(member_sets[right])
+        output.append(
+            tuple(int(index in selected) for index in range(len(instance.nodes)))
+        )
+    return output
+
+
+def _layout_actions(instance: AzureBundleInstance) -> list[Action]:
+    """Return complete feasible allocations retained from library layouts."""
+
+    grouped: dict[int, list[int]] = defaultdict(list)
+    for index, node in enumerate(instance.nodes):
+        grouped[node.layout].append(index)
+    actions: list[Action] = []
+    for indices in grouped.values():
+        action = tuple(
+            int(index in indices) for index in range(len(instance.nodes))
+        )
+        if bundle_allocation_feasible(instance, action):
+            actions.append(action)
+    return actions
+
+
+def _layout_grover_qaoa_candidates(
+    instance: AzureBundleInstance,
+    weights: np.ndarray,
+    candidates: int,
+    regime: QuantumWalkRegime,
+    rng: np.random.Generator,
+) -> list[Action]:
+    """Sample complete feasible allocation layouts with a Grover mixer."""
+
+    layouts = _layout_actions(instance)
+    if not layouts:
+        return [tuple(0 for _ in instance.nodes) for _ in range(candidates)]
+    values = np.asarray(
+        [np.dot(np.asarray(action, dtype=float), weights) for action in layouts]
+    )
+    probabilities = _grover_qaoa_probabilities(values, regime)
+    choices = rng.choice(len(layouts), size=candidates, p=probabilities)
+    return [layouts[int(index)] for index in choices]
+
+
+def _randomized_layout_candidates(
+    instance: AzureBundleInstance,
+    candidates: int,
+    rng: np.random.Generator,
+) -> list[Action]:
+    """Uniformly sample the same complete layouts as the quantum module."""
+
+    layouts = _layout_actions(instance)
+    if not layouts:
+        return [tuple(0 for _ in instance.nodes) for _ in range(candidates)]
+    choices = rng.integers(0, len(layouts), size=candidates)
+    return [layouts[int(index)] for index in choices]
+
+
+def _deterministic_layout_candidates(
+    instance: AzureBundleInstance,
+    weights: np.ndarray,
+    candidates: int,
+) -> list[Action]:
+    """Return the highest learned-score complete layout as a hard control."""
+
+    layouts = _layout_actions(instance)
+    if not layouts:
+        empty = tuple(0 for _ in instance.nodes)
+        return [empty for _ in range(candidates)]
+    best = max(
+        layouts,
+        key=lambda action: float(
+            np.dot(np.asarray(action, dtype=float), weights)
+        ),
+    )
+    return [best for _ in range(candidates)]
+
+
+def _quantum_portfolio_candidates(
+    instance: AzureBundleInstance,
+    weights: np.ndarray,
+    candidates: int,
+    rydberg: SamplerRegime,
+    quantum_walk: QuantumWalkRegime,
+    rng: np.random.Generator,
+) -> list[Action]:
+    """Allocate a fixed shot budget across complementary quantum modules."""
+
+    modules = (
+        _layout_grover_qaoa_candidates,
+        _paired_grover_qaoa_candidates,
+        _modular_xy_qaoa_candidates,
+        _modular_blockade_candidates,
+    )
+    counts = [candidates // len(modules) for _ in modules]
+    for index in range(candidates % len(modules)):
+        counts[index] += 1
+    output: list[Action] = []
+    for index, (module, count) in enumerate(zip(modules, counts, strict=True)):
+        if count == 0:
+            continue
+        child = np.random.default_rng(int(rng.integers(0, 2**32 - 1)))
+        if module is _modular_blockade_candidates:
+            output.extend(module(instance, weights, count, rydberg, child))
+        else:
+            output.extend(
+                module(instance, weights, count, quantum_walk, child)
+            )
+    return output
+
+
 def generate_bundle_candidates(
     method: str,
     *,
@@ -774,6 +1260,7 @@ def generate_bundle_candidates(
     regime: SamplerRegime,
     candidates: int,
     seed: int,
+    quantum_walk: QuantumWalkRegime = QuantumWalkRegime(),
 ) -> AzureBundleCandidateBatch:
     """Generate equal-K bundle proposals and repair exact set conflicts."""
 
@@ -783,7 +1270,36 @@ def generate_bundle_candidates(
     rng = np.random.default_rng(seed)
     state = instance.state
     weights = proposal_weights(model, state)
-    if method == "rydberg_geometry":
+    if method == "layout_grover_qaoa":
+        raw = _layout_grover_qaoa_candidates(
+            instance, weights, candidates, quantum_walk, rng
+        )
+    elif method == "randomized_layout":
+        raw = _randomized_layout_candidates(instance, candidates, rng)
+    elif method == "deterministic_layout":
+        raw = _deterministic_layout_candidates(instance, weights, candidates)
+    elif method == "quantum_portfolio":
+        raw = _quantum_portfolio_candidates(
+            instance,
+            weights,
+            candidates,
+            regime,
+            quantum_walk,
+            rng,
+        )
+    elif method == "paired_grover_qaoa":
+        raw = _paired_grover_qaoa_candidates(
+            instance, weights, candidates, quantum_walk, rng
+        )
+    elif method == "modular_xy_qaoa":
+        raw = _modular_xy_qaoa_candidates(
+            instance, weights, candidates, quantum_walk, rng
+        )
+    elif method == "modular_rydberg":
+        raw = _modular_blockade_candidates(
+            instance, weights, candidates, regime, rng
+        )
+    elif method == "rydberg_geometry":
         raw = _blockade_candidates(
             instance.physical_graph, weights, candidates, regime, rng
         )
@@ -1010,17 +1526,191 @@ def _paired(
     return {"mean": mean, "ci95": ci95, "trials": len(differences)}
 
 
+def _paired_evidence(
+    records: list[dict[str, Any]],
+    *,
+    left: str,
+    right: str,
+    bundle_nodes: int,
+    capacity: float,
+    k: int,
+    metric: str,
+    seed: int,
+) -> dict[str, Any]:
+    """Return paired effect, bootstrap interval, and exact sign-flip p-value."""
+
+    indexed = {
+        (
+            record["window_index"],
+            record["method"],
+            record["bundle_nodes"],
+            record["capacity"],
+            record["k"],
+        ): record
+        for record in records
+    }
+    windows = sorted({int(record["window_index"]) for record in records})
+    differences = np.asarray(
+        [
+            indexed[(window, left, bundle_nodes, capacity, k)][metric]
+            - indexed[(window, right, bundle_nodes, capacity, k)][metric]
+            for window in windows
+        ],
+        dtype=float,
+    )
+    rng = np.random.default_rng(seed)
+    resampled = differences[
+        rng.integers(0, len(differences), size=(100_000, len(differences)))
+    ]
+    bootstrap = np.quantile(np.mean(resampled, axis=1), (0.025, 0.975))
+    observed = float(np.mean(differences))
+    permutations = 1 << len(differences)
+    exceedances = 0
+    bit_positions = np.arange(len(differences), dtype=np.uint64)
+    for start in range(0, permutations, 65_536):
+        stop = min(start + 65_536, permutations)
+        masks = np.arange(start, stop, dtype=np.uint64)[:, None]
+        signs = 1.0 - 2.0 * ((masks >> bit_positions) & 1)
+        permuted = signs @ differences / len(differences)
+        exceedances += int(np.sum(permuted >= observed - 1e-15))
+    return {
+        "left": left,
+        "right": right,
+        "metric": metric,
+        "k": k,
+        "trials": len(differences),
+        "mean": observed,
+        "bootstrap_ci95_low": float(bootstrap[0]),
+        "bootstrap_ci95_high": float(bootstrap[1]),
+        "exact_one_sided_sign_flip_p": exceedances / permutations,
+        "wins": int(np.sum(differences > 1e-12)),
+        "ties": int(np.sum(np.abs(differences) <= 1e-12)),
+        "losses": int(np.sum(differences < -1e-12)),
+    }
+
+
+def _candidate_efficiency(
+    records: list[dict[str, Any]],
+    *,
+    method: str,
+    bundle_nodes: int,
+    capacity: float,
+    k_values: Iterable[int],
+    threshold: float = 0.95,
+) -> dict[str, Any]:
+    """Summarize the smallest recorded K reaching a quality threshold."""
+
+    ordered_k = tuple(sorted(int(value) for value in k_values))
+    relevant = [
+        record
+        for record in records
+        if record["method"] == method
+        and record["bundle_nodes"] == bundle_nodes
+        and record["capacity"] == capacity
+    ]
+    windows = sorted({int(record["window_index"]) for record in relevant})
+    indexed = {
+        (int(record["window_index"]), int(record["k"])): record
+        for record in relevant
+    }
+    first_hits: list[int | None] = []
+    for window in windows:
+        first_hits.append(
+            next(
+                (
+                    k
+                    for k in ordered_k
+                    if indexed[(window, k)]["best_bundle_ratio"] >= threshold
+                ),
+                None,
+            )
+        )
+    observed_hits = [value for value in first_hits if value is not None]
+    return {
+        "method": method,
+        "quality_threshold": threshold,
+        "trials": len(first_hits),
+        "median_k": (
+            float(np.median(observed_hits)) if observed_hits else None
+        ),
+        "hit_by_k": {
+            str(k): float(
+                np.mean(
+                    [value is not None and value <= k for value in first_hits]
+                )
+            )
+            for k in ordered_k
+        },
+        "not_reached_by_max_k": int(
+            sum(value is None for value in first_hits)
+        ),
+    }
+
+
 def _build_gates(results: dict[str, Any]) -> dict[str, Any]:
     config = results["config"]
     target_nodes = max(config["bundle_nodes"])
     target_capacity = max(config["capacities"])
+    primary_method = config.get("primary_method", "rydberg_geometry")
+    comparison_method = config.get("comparison_method", "repair_only")
+    primary_k = int(config.get("primary_k", 16))
     target = _find(
         results["summary"],
-        method="rydberg_geometry",
+        method=primary_method,
         bundle_nodes=target_nodes,
         capacity=target_capacity,
-        k=16,
+        k=primary_k,
     )
+    if primary_method == "modular_rydberg":
+        evidence = results["primary_evidence"]
+        paired = evidence["paired_best_bundle"]
+        primary_efficiency = evidence["candidate_efficiency"][primary_method]
+        comparison_efficiency = evidence["candidate_efficiency"][
+            comparison_method
+        ]
+        checks = {
+            "all_direct_assignment_bounds_within_1pct": (
+                results["oracle_summary"]["direct_gap_within_1pct_rate"] == 1.0
+            ),
+            "all_bundle_milp_exact": (
+                results["oracle_summary"]["bundle_exact_rate"] == 1.0
+            ),
+            "all_executed_actions_safe": (
+                min(
+                    row["post_repair_feasible_rate_mean"]
+                    for row in results["summary"]
+                )
+                == 1.0
+            ),
+        }
+        proposal_checks = {
+            "raw_feasible_rate_equals_1": (
+                target["raw_feasible_rate_mean"] == 1.0
+            ),
+            "repair_removed_fraction_equals_0": (
+                target["repair_removed_fraction_mean"] == 0.0
+            ),
+            "paired_bootstrap_lower_ci_above_comparison": (
+                paired["bootstrap_ci95_low"] > 0.0
+            ),
+            "median_k95_below_comparison": (
+                primary_efficiency["median_k"] is not None
+                and comparison_efficiency["median_k"] is not None
+                and primary_efficiency["median_k"]
+                < comparison_efficiency["median_k"]
+            ),
+        }
+        return {
+            "pipeline_pass": all(checks.values()),
+            "sampler_contribution_pass": all(proposal_checks.values()),
+            "hardware_claim_pass": False,
+            "checks": checks,
+            "sampler_contribution_checks": proposal_checks,
+            "hardware_note": (
+                "The modular Rydberg path is a sequential classical surrogate; "
+                "no physical QPU distribution or latency was measured."
+            ),
+        }
     paired = results["paired_comparisons"][
         "geometry_minus_repair_end_to_end"
     ]
@@ -1087,7 +1777,12 @@ def run_azure_bundle_benchmark(
     """Train on early trace windows and evaluate held-out bundle graphs."""
 
     stable = json.loads(stable_results_path.read_text(encoding="utf-8"))
-    regime = SamplerRegime(**stable["selected_regime"])
+    if config.sampler_regime == "stable":
+        regime = SamplerRegime(**stable["selected_regime"])
+    else:
+        regime = next(
+            item for item in REGIME_GRID if item.name == config.sampler_regime
+        )
     train = load_trace_windows(
         sqlite_path,
         machine_id=config.machine_id,
@@ -1230,7 +1925,7 @@ def run_azure_bundle_benchmark(
                     ),
                 }
                 for k in config.k_values:
-                    for method_index, method in enumerate(BUNDLE_METHODS):
+                    for method in BUNDLE_METHODS:
                         batch = generate_bundle_candidates(
                             method,
                             instance=instance,
@@ -1240,7 +1935,12 @@ def run_azure_bundle_benchmark(
                             seed=seed
                             + node_count * 10_007
                             + k * 503
-                            + method_index * 100_003,
+                            + _method_seed_offset(method),
+                            quantum_walk=QuantumWalkRegime(
+                                gamma=config.quantum_walk_gamma,
+                                beta=config.quantum_walk_beta,
+                                depth=config.quantum_walk_depth,
+                            ),
                         )
                         records.append(
                             {
@@ -1280,6 +1980,38 @@ def run_azure_bundle_benchmark(
             metric="best_end_to_end_ratio",
         ),
     }
+    primary_evidence = {
+        "paired_best_bundle": _paired_evidence(
+            records,
+            left=config.primary_method,
+            right=config.comparison_method,
+            bundle_nodes=target_nodes,
+            capacity=target_capacity,
+            k=config.primary_k,
+            metric="best_bundle_ratio",
+            seed=config.seed + 8_081,
+        ),
+        "paired_end_to_end": _paired_evidence(
+            records,
+            left=config.primary_method,
+            right=config.comparison_method,
+            bundle_nodes=target_nodes,
+            capacity=target_capacity,
+            k=config.primary_k,
+            metric="best_end_to_end_ratio",
+            seed=config.seed + 8_083,
+        ),
+        "candidate_efficiency": {
+            method: _candidate_efficiency(
+                records,
+                method=method,
+                bundle_nodes=target_nodes,
+                capacity=target_capacity,
+                k_values=config.k_values,
+            )
+            for method in (config.primary_method, config.comparison_method)
+        },
+    }
     direct_latencies = np.asarray(
         [row["latency_ms"] for row in direct_oracles], dtype=float
     )
@@ -1313,6 +2045,7 @@ def run_azure_bundle_benchmark(
         "bundle_oracles": bundle_oracles,
         "summary": summary,
         "paired_comparisons": paired,
+        "primary_evidence": primary_evidence,
         "oracle_summary": {
             "direct_states": len(direct_oracles),
             "direct_exact": int(sum(row["exact"] for row in direct_oracles)),
@@ -1365,5 +2098,316 @@ def run_azure_bundle_benchmark(
         report_path=output_report,
         payload=results,
         render_report=render_azure_bundle_report,
+    )
+    return results
+
+
+EXTERNAL_PORTFOLIO_METHODS = (
+    "quantum_portfolio",
+    "randomized_greedy",
+    "randomized_layout",
+    "deterministic_layout",
+    "beam_search",
+)
+
+
+def run_external_portfolio_benchmark(
+    *,
+    sqlite_path: Path,
+    stable_results_path: Path,
+    output_json: Path,
+    output_report: Path,
+    config: ExternalPortfolioConfig = ExternalPortfolioConfig(),
+) -> dict[str, Any]:
+    """Validate a frozen quantum-module portfolio on unseen generations."""
+
+    stable = json.loads(stable_results_path.read_text(encoding="utf-8"))
+    selected = SamplerRegime(**stable["selected_regime"])
+    # The adiabatic pulse was selected on generation 16 validation days.  The
+    # external generations remain untouched by all model and pulse choices.
+    rydberg = SamplerRegime(
+        "standardized-050-adiabatic",
+        "standardized",
+        0.5,
+        "adiabatic",
+    )
+    quantum_walk = QuantumWalkRegime(
+        config.quantum_walk_gamma,
+        config.quantum_walk_beta,
+        config.quantum_walk_depth,
+    )
+    records: list[dict[str, Any]] = []
+    source_profiles: dict[str, Any] = {}
+    training_summaries: dict[str, Any] = {}
+    oracle_records: list[dict[str, Any]] = []
+    for machine_id in config.machine_ids:
+        train = load_trace_windows(
+            sqlite_path,
+            machine_id=machine_id,
+            anchors=_anchors(
+                config.train_day_start,
+                config.train_day_end,
+                config.train_windows,
+            ),
+            end_day=6.0,
+            jobs=config.raw_jobs,
+        )
+        test = load_trace_windows(
+            sqlite_path,
+            machine_id=machine_id,
+            anchors=_anchors(
+                config.test_day_start,
+                config.test_day_end,
+                config.test_windows,
+            ),
+            end_day=14.0,
+            jobs=config.raw_jobs,
+        )
+        model, training = fit_bundle_value_model(train)
+        training_summaries[str(machine_id)] = training
+        source_profiles[str(machine_id)] = trace_profile(sqlite_path, machine_id)
+        for window_index, window in enumerate(test):
+            seed = (
+                config.seed
+                + machine_id * 10_000_019
+                + window_index * 1_000_003
+            )
+            nodes = generate_bundle_library(
+                window,
+                model=model,
+                machine_slots=config.machine_slots,
+                capacity=config.capacity,
+                target_nodes=config.bundle_nodes,
+                seed=seed,
+            )
+            instance = make_bundle_instance(
+                window,
+                nodes,
+                capacity=config.capacity,
+                seed=seed + 97,
+            )
+            bundle = solve_bundle_milp(
+                instance, config.bundle_milp_time_limit_ms
+            )
+            direct = solve_direct_assignment_milp(
+                window,
+                machine_slots=config.machine_slots,
+                capacity=config.capacity,
+                time_limit_ms=config.direct_milp_time_limit_ms,
+            )
+            if (
+                not direct.bounded
+                or direct.mip_gap is None
+                or direct.mip_gap > 0.01
+            ):
+                direct = solve_direct_assignment_milp(
+                    window,
+                    machine_slots=config.machine_slots,
+                    capacity=config.capacity,
+                    time_limit_ms=config.direct_milp_retry_limit_ms,
+                )
+            oracle_records.append(
+                {
+                    "machine_id": machine_id,
+                    "window_index": window_index,
+                    "bundle_exact": bundle.exact,
+                    "bundle_reference": bundle.objective,
+                    "direct_reference": direct.objective,
+                    "direct_incumbent": direct.incumbent_objective,
+                    "direct_gap": direct.mip_gap,
+                    "direct_bounded": direct.bounded,
+                }
+            )
+            common = {
+                "machine_id": machine_id,
+                "window_index": window_index,
+                "anchor_day": window.anchor_day,
+                "k": config.candidates,
+                "bundle_nodes": config.bundle_nodes,
+                "capacity": config.capacity,
+                "bundle_reference": bundle.objective,
+                "direct_reference": direct.objective,
+                "library_coverage": (
+                    bundle.objective / max(direct.objective, 1e-12)
+                ),
+            }
+            for method in EXTERNAL_PORTFOLIO_METHODS:
+                batch = generate_bundle_candidates(
+                    method,
+                    instance=instance,
+                    model=model,
+                    regime=rydberg,
+                    candidates=config.candidates,
+                    seed=(
+                        seed
+                        + config.candidates * 503
+                        + _method_seed_offset(method)
+                    ),
+                    quantum_walk=quantum_walk,
+                )
+                records.append(
+                    {
+                        **common,
+                        "method": method,
+                        **evaluate_bundle_candidates(
+                            batch=batch,
+                            instance=instance,
+                            model=model,
+                            bundle_reference=bundle.objective,
+                            direct_reference=direct.objective,
+                            epsilon=0.05,
+                        ),
+                    }
+                )
+    summary: list[dict[str, Any]] = []
+    comparisons: dict[str, Any] = {}
+    for machine_id in config.machine_ids:
+        generation_records = [
+            row for row in records if row["machine_id"] == machine_id
+        ]
+        for method in EXTERNAL_PORTFOLIO_METHODS:
+            method_records = [
+                row for row in generation_records if row["method"] == method
+            ]
+            row: dict[str, Any] = {
+                "machine_id": machine_id,
+                "method": method,
+                "trials": len(method_records),
+            }
+            for metric in (
+                "best_bundle_ratio",
+                "best_end_to_end_ratio",
+                "epsilon_coverage",
+                "raw_feasible_rate",
+                "repair_removed_fraction",
+                "proposal_latency_ms",
+            ):
+                mean, ci95 = _mean_ci(item[metric] for item in method_records)
+                row[f"{metric}_mean"] = mean
+                row[f"{metric}_ci95"] = ci95
+            summary.append(row)
+        comparisons[str(machine_id)] = {
+            method: {
+                "bundle": _paired_evidence(
+                    generation_records,
+                    left="quantum_portfolio",
+                    right=method,
+                    bundle_nodes=config.bundle_nodes,
+                    capacity=config.capacity,
+                    k=config.candidates,
+                    metric="best_bundle_ratio",
+                    seed=config.seed + machine_id + _method_seed_offset(method),
+                ),
+                "end_to_end": _paired_evidence(
+                    generation_records,
+                    left="quantum_portfolio",
+                    right=method,
+                    bundle_nodes=config.bundle_nodes,
+                    capacity=config.capacity,
+                    k=config.candidates,
+                    metric="best_end_to_end_ratio",
+                    seed=(
+                        config.seed
+                        + machine_id
+                        + _method_seed_offset(method)
+                        + 17
+                    ),
+                ),
+            }
+            for method in EXTERNAL_PORTFOLIO_METHODS
+            if method != "quantum_portfolio"
+        }
+    oracle_checks = {
+        "all_bundle_milp_exact": all(
+            row["bundle_exact"] for row in oracle_records
+        ),
+        "all_direct_bounds_within_1pct": all(
+            row["direct_bounded"]
+            and row["direct_gap"] is not None
+            and row["direct_gap"] <= 0.01
+            for row in oracle_records
+        ),
+    }
+    sampler_checks = {
+        "portfolio_raw_feasible_equals_1": all(
+            row["raw_feasible_rate"] == 1.0
+            for row in records
+            if row["method"] == "quantum_portfolio"
+        ),
+        "portfolio_repair_fraction_equals_0": all(
+            row["repair_removed_fraction"] == 0.0
+            for row in records
+            if row["method"] == "quantum_portfolio"
+        ),
+        "beats_randomized_greedy_on_every_dataset": all(
+            comparisons[str(machine_id)]["randomized_greedy"]["bundle"][
+                "bootstrap_ci95_low"
+            ]
+            > 0.0
+            for machine_id in config.machine_ids
+        ),
+        "beats_randomized_layout_on_every_dataset": all(
+            comparisons[str(machine_id)]["randomized_layout"]["bundle"][
+                "bootstrap_ci95_low"
+            ]
+            > 0.0
+            for machine_id in config.machine_ids
+        ),
+    }
+    strong_checks = {
+        "beats_deterministic_layout_on_every_dataset": all(
+            comparisons[str(machine_id)]["deterministic_layout"]["bundle"][
+                "bootstrap_ci95_low"
+            ]
+            > 0.0
+            for machine_id in config.machine_ids
+        ),
+        "beats_beam_on_every_dataset": all(
+            comparisons[str(machine_id)]["beam_search"]["bundle"][
+                "bootstrap_ci95_low"
+            ]
+            > 0.0
+            for machine_id in config.machine_ids
+        ),
+    }
+    results: dict[str, Any] = {
+        "schema_version": 1,
+        "study": "azure_external_quantum_portfolio",
+        "claim_boundary": (
+            "External Azure hardware-generation validation of ideal quantum-"
+            "module surrogates; no physical QPU or hardware timing claim."
+        ),
+        "config": asdict(config),
+        "source": {
+            "sqlite_path": str(sqlite_path.resolve()),
+            "sqlite_sha256": _file_sha256(sqlite_path),
+            "stable_results_path": str(stable_results_path.resolve()),
+        },
+        "source_profiles": source_profiles,
+        "training": training_summaries,
+        "generation16_selected_regime": asdict(selected),
+        "portfolio_rydberg_regime": asdict(rydberg),
+        "quantum_walk_regime": asdict(quantum_walk),
+        "records": records,
+        "oracles": oracle_records,
+        "summary": summary,
+        "comparisons": comparisons,
+        "gates": {
+            "pipeline_pass": all(oracle_checks.values()),
+            "potential_advantage_pass": (
+                all(sampler_checks.values())
+            ),
+            "strong_classical_advantage_pass": all(strong_checks.values()),
+            "hardware_claim_pass": False,
+            "oracle_checks": oracle_checks,
+            "sampler_checks": sampler_checks,
+            "strong_baseline_checks": strong_checks,
+        },
+    }
+    ResultWriter().artifacts(
+        json_path=output_json,
+        report_path=output_report,
+        payload=results,
+        render_report=render_external_portfolio_report,
     )
     return results
